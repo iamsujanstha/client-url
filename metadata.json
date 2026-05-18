@@ -1,0 +1,6 @@
+{
+  "name": "HyperCurl",
+  "description": "Minimal, production-grade API testing and concurrency engine powered by native curl.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
