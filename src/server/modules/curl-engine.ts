@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 export interface RequestConfig {
   id?: string;
   name?: string;
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD';
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'GRAPHQL';
   url: string;
   headers: Record<string, string>;
   body?: string;
@@ -23,14 +23,27 @@ export interface CurlResult {
 
 export class CurlEngine {
   static buildCommand(config: RequestConfig): string[] {
-    const args = ['-i', '-s', '-X', config.method];
+    const isGraphql = config.method === 'GRAPHQL';
+    const method = isGraphql ? 'POST' : config.method;
+    const args = ['-i', '-s', '-X', method];
 
     // Default Headers (if not overridden)
-    const finalHeaders = {
+    const finalHeaders: Record<string, string> = {
       'User-Agent': 'curl/7.68.0',
-      'Accept': '*/*',
+      'Accept': 'application/json, text/plain, */*',
+      ...(isGraphql ? { 'Content-Type': 'application/json' } : {}),
       ...config.headers
     };
+
+    // Auto-detect JSON body if Content-Type is missing
+    if (config.body && ['POST', 'PUT', 'PATCH'].includes(config.method) && !finalHeaders['Content-Type']) {
+      try {
+        JSON.parse(config.body);
+        finalHeaders['Content-Type'] = 'application/json';
+      } catch (e) {
+        // Not JSON, skip
+      }
+    }
 
     // Add Headers
     Object.entries(finalHeaders).forEach(([key, value]) => {
@@ -40,7 +53,7 @@ export class CurlEngine {
     });
 
     // Body
-    if (config.body && ['POST', 'PUT', 'PATCH'].includes(config.method)) {
+    if (config.body && (['POST', 'PUT', 'PATCH'].includes(config.method) || config.method === 'GRAPHQL')) {
       args.push('-d', config.body);
     }
 

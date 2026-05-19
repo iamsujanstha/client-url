@@ -19,7 +19,16 @@ function HistoryList() {
   const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('/api/history').then(r => r.json()).then(setHistory);
+    fetch('/api/history')
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP_${r.status}`);
+        return r.json();
+      })
+      .then(setHistory)
+      .catch(err => {
+        console.error('History fetch failed:', err);
+        setHistory([]);
+      });
   }, []);
 
   return (

@@ -1,16 +1,19 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Play, Plus, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Play, Plus, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight, Beaker, Activity, RefreshCw, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { v4 as uuidv4 } from 'uuid';
 import { RequestConfig, CurlResult } from '../server/modules/curl-engine';
 import { BatchConfig, ProgressUpdate } from '../server/modules/runner';
+import { TestLab, TestModuleId } from './TestLab';
 
-const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD'];
+const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'GRAPHQL'];
 
 interface SavedRequest extends RequestConfig {
   id: string;
   name: string;
+  graphqlQuery?: string;
+  graphqlVariables?: string;
   headersList: { id: string, key: string, value: string }[];
 }
 
@@ -24,10 +27,13 @@ interface Tab {
   id: string;
   name: string;
   config: RequestConfig;
+  graphqlQuery?: string;
+  graphqlVariables?: string;
   headersList: { id: string, key: string, value: string }[];
   result: CurlResult | null;
   batchResults: CurlResult[];
   batchMode: boolean;
+  showCurl: boolean;
   loading: boolean;
   progress: ProgressUpdate | null;
 }
@@ -41,8 +47,27 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
   // State
   const [tabs, setTabs] = useState<Tab[]>(() => {
-    const saved = localStorage.getItem(TABS_KEY);
-    if (saved) return JSON.parse(saved);
+    try {
+      const saved = localStorage.getItem(TABS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Add safety for missing properties in old state
+          return parsed.map(t => ({
+            ...t,
+            batchResults: Array.isArray(t.batchResults) ? t.batchResults : [],
+            batchMode: !!t.batchMode,
+            showCurl: !!t.showCurl,
+            loading: false,
+            progress: null,
+            headersList: Array.isArray(t.headersList) ? t.headersList : [{ id: '1', key: 'Content-Type', value: 'application/json' }]
+          }));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load tabs from localStorage', e);
+    }
+    
     const initialId = uuidv4();
     return [{
       id: initialId,
@@ -52,18 +77,28 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
       result: null,
       batchResults: [],
       batchMode: false,
+      showCurl: false,
       loading: false,
       progress: null
     }];
   });
 
   const [activeTabId, setActiveTabId] = useState<string>(() => {
-    return localStorage.getItem(ACTIVE_TAB_KEY) || tabs[0].id;
+    const saved = localStorage.getItem(ACTIVE_TAB_KEY);
+    if (saved && tabs.some(t => t.id === saved)) return saved;
+    return tabs[0]?.id || '';
   });
 
   const [collections, setCollections] = useState<Collection[]>(() => {
-    const saved = localStorage.getItem(COLLECTIONS_KEY);
-    if (saved) return JSON.parse(saved);
+    try {
+      const saved = localStorage.getItem(COLLECTIONS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.error('Failed to load collections from localStorage', e);
+    }
     return [{ id: 'default', name: 'MY_COLLECTION', requests: [] }];
   });
 
@@ -73,8 +108,11 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [view, setView] = useState<'debugger' | 'lab'>('debugger');
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
+  
+  if (!activeTab) return null;
 
   // Sync Persistence
   useEffect(() => localStorage.setItem(TABS_KEY, JSON.stringify(tabs)), [tabs]);
@@ -88,22 +126,26 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
     const socket = new WebSocket(`${protocol}//${window.location.host}`);
     
     socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'progress') {
-        const tabId = data.tabId || activeTabId; // Fallback if server doesn't send tabId
-        setTabs(prev => prev.map(t => {
-          if (t.id === tabId) {
-            return {
-              ...t,
-              progress: data,
-              batchResults: data.lastResult ? [...t.batchResults, data.lastResult] : t.batchResults
-            };
-          }
-          return t;
-        }));
-      } else if (data.type === 'complete') {
-        const tabId = data.tabId || activeTabId;
-        setTabs(prev => prev.map(t => t.id === tabId ? { ...t, progress: null, loading: false } : t));
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'progress') {
+          const tabId = data.tabId || activeTabId;
+          setTabs(prev => prev.map(t => {
+            if (t.id === tabId) {
+              return {
+                ...t,
+                progress: { ...data, startTime: data.startTime || Date.now() },
+                batchResults: data.lastResult ? [...(Array.isArray(t.batchResults) ? t.batchResults : []), data.lastResult] : t.batchResults
+              };
+            }
+            return t;
+          }));
+        } else if (data.type === 'complete') {
+          const tabId = data.tabId || activeTabId;
+          setTabs(prev => prev.map(t => t.id === tabId ? { ...t, progress: null, loading: false } : t));
+        }
+      } catch (e) {
+        console.error('WS Message parsing error:', e);
       }
     };
 
@@ -132,17 +174,91 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
     return resolved;
   };
 
-  const getResolvedConfig = (tab: Tab): RequestConfig => ({
-    ...tab.config,
-    url: resolveVars(tab.config.url),
-    headers: tab.headersList.reduce((acc, h) => {
-      const resolvedKey = resolveVars(h.key).trim();
-      const resolvedValue = resolveVars(h.value).trim();
-      if (resolvedKey) acc[resolvedKey] = resolvedValue;
-      return acc;
-    }, {} as Record<string, string>),
-    body: resolveVars(tab.config.body || '')
-  });
+  const getResolvedConfig = (tab: Tab): RequestConfig => {
+    let body = resolveVars(tab.config.body || '');
+    
+    if (tab.config.method === 'GRAPHQL') {
+      let vars = {};
+      try {
+        if (tab.graphqlVariables) {
+          vars = JSON.parse(resolveVars(tab.graphqlVariables));
+        }
+      } catch (e) {
+        console.error('Invalid GraphQL variables JSON', e);
+      }
+      
+      body = JSON.stringify({
+        query: tab.graphqlQuery || '',
+        variables: vars
+      });
+    }
+
+    return {
+      ...tab.config,
+      url: resolveVars(tab.config.url),
+      headers: tab.headersList.reduce((acc, h) => {
+        const resolvedKey = resolveVars(h.key).trim();
+        const resolvedValue = resolveVars(h.value).trim();
+        if (resolvedKey) acc[resolvedKey] = resolvedValue;
+        return acc;
+      }, {} as Record<string, string>),
+      body
+    };
+  };
+
+  const runCollection = (colId: string) => {
+    const col = collections.find(c => c.id === colId);
+    if (!col || col.requests.length === 0) return;
+    
+    const newId = uuidv4();
+    const newTab: Tab = {
+      id: newId,
+      name: `BATCH: ${col.name}`,
+      config: col.requests[0],
+      headersList: col.requests[0].headersList,
+      result: null,
+      batchResults: [],
+      batchMode: true,
+      showCurl: false,
+      loading: true,
+      progress: null
+    };
+
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(newId);
+
+    // Filter out invalid requests and resolve vars (vars resolution should happen here or on server)
+    // For now, let's keep it simple and send them as they are
+    const resolvedRequests = col.requests.map(req => {
+      // Create a dummy tab to use getResolvedConfig logic
+      const dummyTab: Tab = {
+        ...newTab,
+        config: req,
+        headersList: req.headersList,
+        graphqlQuery: req.graphqlQuery,
+        graphqlVariables: req.graphqlVariables
+      };
+      return getResolvedConfig(dummyTab);
+    });
+
+    if (ws) {
+      ws.send(JSON.stringify({
+        type: 'run-batch',
+        tabId: newId,
+        payload: {
+          requests: resolvedRequests,
+          iterations: resolvedRequests.length,
+          concurrency: 1 // Run sequentially by default for collection runs
+        }
+      }));
+    }
+  };
+
+  const duplicateCollection = (colId: string) => {
+    const col = collections.find(c => c.id === colId);
+    if (!col) return;
+    setCollections(prev => [...prev, { ...col, id: uuidv4(), name: `${col.name}_COPY` }]);
+  };
 
   const handleAbort = useCallback(() => {
     if (activeTab.batchMode) {
@@ -180,10 +296,39 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
           body: JSON.stringify(resolvedConfig),
           signal: controller.signal
         });
+
+        if (!response.ok) {
+          const text = await response.text();
+          let errorMsg = `Server error: ${response.status}`;
+          try {
+            const errJson = JSON.parse(text);
+            errorMsg = errJson.error || errorMsg;
+          } catch {
+            // Not JSON, use text directly if short
+            if (text.length < 100) errorMsg = text;
+          }
+          throw new Error(errorMsg);
+        }
+
         const data = await response.json();
         updateActiveTab({ result: data });
       } catch (err: any) {
-        if (err.name !== 'AbortError') console.error(err);
+        if (err.name !== 'AbortError') {
+          console.error(err);
+          // Create dummy result for error display
+          updateActiveTab({ 
+            result: {
+              id: uuidv4(),
+              status: 0,
+              headers: {},
+              body: '',
+              responseTime: 0,
+              rawOutput: err.message,
+              error: err.message,
+              curlCommand: 'N/A'
+            }
+          });
+        }
       } finally {
         updateActiveTab({ loading: false });
       }
@@ -196,10 +341,13 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
       id: newId,
       name: savedReq?.name || 'NEW_REQUEST',
       config: savedReq ? { method: savedReq.method, url: savedReq.url, headers: savedReq.headers, body: savedReq.body } : { method: 'GET', url: '', headers: {}, body: '' },
+      graphqlQuery: savedReq?.graphqlQuery || '',
+      graphqlVariables: savedReq?.graphqlVariables || '',
       headersList: savedReq?.headersList || [{ id: '1', key: 'Content-Type', value: 'application/json' }],
       result: null,
       batchResults: [],
       batchMode: false,
+      showCurl: false,
       loading: false,
       progress: null
     };
@@ -215,21 +363,69 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
     if (activeTabId === id) setActiveTabId(newTabs[0].id);
   };
 
+  const addCollection = () => {
+    const name = prompt('ENTER_COLLECTION_NAME:');
+    if (!name) return;
+    setCollections(prev => [...prev, { id: uuidv4(), name: name.toUpperCase(), requests: [] }]);
+  };
+
+  const deleteRequest = (colId: string, reqId: string) => {
+    setCollections(prev => prev.map(c => 
+      c.id === colId ? { ...c, requests: c.requests.filter(r => r.id !== reqId) } : c
+    ));
+  };
+
+  const deleteCollection = (id: string) => {
+    if (id === 'default') {
+      alert('CANNOT_DELETE_ROOT_COLLECTION');
+      return;
+    }
+    if (confirm('DELETE_COLLECTION_AND_ALL_REQUESTS?')) {
+      setCollections(prev => prev.filter(c => c.id !== id));
+    }
+  };
+
   const saveToCollection = () => {
     const name = prompt('ENTER_REQUEST_IDENTIFIER:', activeTab.name);
     if (!name) return;
+
+    // Simplistic collection selector for now
+    const collectionList = collections.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+    const choice = prompt(`SELECT_COLLECTION (ENTER NUMBER):\n${collectionList}`, '1');
+    const index = parseInt(choice || '1') - 1;
+    const targetCol = collections[index] || collections[0];
     
+    if (!targetCol) return;
+
     const savedReq: SavedRequest = {
       id: uuidv4(),
       name,
       ...activeTab.config,
-      headersList: activeTab.headersList
+      graphqlQuery: activeTab.graphqlQuery,
+      graphqlVariables: activeTab.graphqlVariables,
+      headersList: [...activeTab.headersList]
     };
 
-    setCollections(prev => prev.map(c => 
-      c.id === 'default' ? { ...c, requests: [...c.requests, savedReq] } : c
-    ));
+    setCollections(prev => prev.map(c => c.id === targetCol.id ? { ...c, requests: [...c.requests, savedReq] } : c));
     updateActiveTab({ name });
+  };
+
+  const handleStartLabTest = (moduleId: TestModuleId, settings: any) => {
+    if (!ws) return;
+    updateActiveTab({ loading: true, batchResults: [] });
+    ws.send(JSON.stringify({
+      type: 'run-batch',
+      tabId: activeTabId,
+      payload: {
+        request: getResolvedConfig(activeTab),
+        testModule: moduleId,
+        iterations: settings.iterations,
+        concurrency: settings.concurrency,
+        retries: settings.retries,
+        jitter: moduleId === 'chaos',
+        fuzzing: moduleId === 'fuzzer'
+      }
+    }));
   };
 
   return (
@@ -237,95 +433,134 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
       {/* Collapsible Sidebar */}
       <motion.aside 
         initial={false}
-        animate={{ width: isSidebarCollapsed ? '48px' : '260px' }}
-        className="border-r border-[#1E293B] bg-[#0F1115] flex flex-col shrink-0 overflow-hidden relative z-20 shadow-2xl shadow-black/50"
+        animate={{ width: isSidebarCollapsed ? '52px' : '220px' }}
+        className="border-r border-slate-800 bg-[#0F1115] flex flex-col shrink-0 overflow-hidden relative z-20"
       >
-        <div className="h-14 flex items-center justify-between px-4 border-b border-[#1E293B] shrink-0">
+        <div className="h-12 flex items-center justify-between px-3 border-b border-slate-800 shrink-0">
           {!isSidebarCollapsed && (
-            <span className="text-[10px] font-black tracking-[0.3em] text-emerald-500 uppercase flex items-center gap-2">
-              <Terminal size={14} /> Curl_Commander
+            <span className="text-[10px] font-black tracking-[0.4em] text-white uppercase flex items-center gap-2">
+              <Terminal size={14} className="text-emerald-500" /> CMD_CORE
             </span>
           )}
           <button 
             onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-            className="text-slate-500 hover:text-white transition-colors"
+            className="text-slate-600 hover:text-white transition-colors p-1"
           >
-            {isSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            {isSidebarCollapsed ? <Plus size={16} className="rotate-45" /> : <ChevronLeft size={16} />}
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-          <div className="p-2 space-y-4">
+          <div className="p-2 space-y-6">
+            <div className="space-y-1">
+              {!isSidebarCollapsed && <div className="text-[8px] font-black text-slate-700 uppercase tracking-[0.2em] mb-2 ml-2">NAVIGATION</div>}
+              <button 
+                onClick={() => setView('debugger')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-2 py-2 rounded text-[10px] font-medium uppercase tracking-widest transition-all",
+                  view === 'debugger' ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
+                )}
+                title={isSidebarCollapsed ? "API Debugger" : ""}
+              >
+                <Terminal size={16} /> {!isSidebarCollapsed && "Debugger"}
+              </button>
+              <button 
+                onClick={() => setView('lab')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-2 py-2 rounded text-[10px] font-medium uppercase tracking-widest transition-all",
+                  view === 'lab' ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
+                )}
+                title={isSidebarCollapsed ? "Test Lab" : ""}
+              >
+                <Beaker size={16} /> {!isSidebarCollapsed && "Test Lab"}
+              </button>
+            </div>
+
             {!isSidebarCollapsed && (
-              <section>
-                <div className="flex items-center justify-between px-2 mb-2">
-                  <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                    <Folder size={10} /> Collections
-                  </span>
-                  <button className="text-slate-600 hover:text-emerald-500 transition-colors">
+              <section className="space-y-4">
+                <div className="flex items-center justify-between px-2">
+                  <span className="text-[8px] font-black text-slate-700 uppercase tracking-[0.2em]">COLLECTIONS</span>
+                  <button 
+                    onClick={addCollection}
+                    className="text-slate-600 hover:text-emerald-500 transition-colors"
+                  >
                     <Plus size={12} />
                   </button>
                 </div>
-                {collections.map(col => (
-                  <div key={col.id} className="space-y-1">
-                    <div className="flex items-center gap-2 px-2 py-1.5 text-[10px] font-mono text-slate-400 group cursor-default">
-                      <ChevronDown size={10} className="text-slate-600" />
-                      {col.name}
-                    </div>
-                    <div className="pl-4 space-y-0.5">
-                      {col.requests.map(req => (
-                        <div key={req.id} className="group flex items-center">
-                          <button
-                            onClick={() => createTab(req)}
-                            className="flex-1 text-left px-2 py-1.5 text-[9px] font-mono text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all flex items-center gap-2 truncate"
+                <div className="space-y-4">
+                  {collections.map(col => (
+                    <div key={col.id} className="space-y-1">
+                      <div className="text-[9px] font-mono text-slate-600 px-2 flex items-center justify-between group/col">
+                        <div className="flex items-center gap-2">
+                          <Folder size={10} /> {col.name}
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover/col:opacity-100 transition-all">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); runCollection(col.id); }}
+                            className="p-1 text-slate-600 hover:text-emerald-500 transition-colors"
+                            title="RUN_COLLECTION"
                           >
-                            <span className={cn(
-                              "w-8 text-[7px] font-bold text-center rounded shrink-0",
-                              req.method === 'GET' ? "text-emerald-500 bg-emerald-500/10" :
-                              req.method === 'POST' ? "text-blue-500 bg-blue-500/10" : "text-amber-500 bg-amber-500/10"
-                            )}>
-                              {req.method}
-                            </span>
-                            <span className="truncate">{req.name}</span>
+                            <Play size={10} fill="currentColor" />
                           </button>
                           <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setCollections(prev => prev.map(c => 
-                                c.id === col.id ? { ...c, requests: c.requests.filter(r => r.id !== req.id) } : c
-                              ));
-                            }}
-                            className="opacity-0 group-hover:opacity-100 p-1 text-slate-600 hover:text-rose-500 transition-all mr-1"
+                            onClick={(e) => { e.stopPropagation(); duplicateCollection(col.id); }}
+                            className="p-1 text-slate-600 hover:text-blue-500 transition-colors"
+                            title="DUPLICATE"
                           >
-                            <Trash2 size={10} />
+                            <Copy size={10} />
                           </button>
+                          {col.id !== 'default' && (
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); deleteCollection(col.id); }}
+                              className="p-1 text-slate-700 hover:text-rose-500 transition-all"
+                              title="DELETE"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          )}
                         </div>
-                      ))}
+                      </div>
+                      <div className="space-y-0.5 ml-1">
+                        {col.requests.map(req => (
+                          <div key={req.id} className="group flex items-center pr-2">
+                            <button
+                              onClick={() => { setView('debugger'); createTab(req); }}
+                              className="flex-1 text-left px-3 py-1.5 text-[9px] font-mono text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all flex items-center gap-2 truncate"
+                            >
+                              <span className={cn(
+                                "w-6 text-[7px] font-black text-center rounded-[1px] py-0.5",
+                                req.method === 'GET' ? "text-emerald-500 bg-emerald-500/10" :
+                                req.method === 'POST' ? "text-blue-500 bg-blue-500/10" :
+                                req.method === 'GRAPHQL' ? "text-violet-500 bg-violet-500/10" : "text-amber-500 bg-amber-500/10"
+                              )}>
+                                {req.method === 'GRAPHQL' ? 'GQL' : req.method[0]}
+                              </span>
+                              <span className="truncate opacity-70">{req.name}</span>
+                            </button>
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); deleteRequest(col.id, req.id); }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-700 hover:text-rose-500 transition-all"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </section>
-            )}
-            
-            {/* Minimal Icons for Collapsed State */}
-            {isSidebarCollapsed && (
-              <div className="flex flex-col items-center gap-4 py-4">
-                <button className="text-slate-600 hover:text-emerald-500" title="Collections"><Folder size={18} /></button>
-                <button className="text-slate-600 hover:text-blue-500" title="History"><Clock size={18} /></button>
-                <div className="w-6 h-px bg-slate-800"></div>
-                <button onClick={() => createTab()} className="text-emerald-500 hover:scale-110 transition-transform" title="New Request"><Plus size={18} /></button>
-              </div>
             )}
           </div>
         </div>
 
         {!isSidebarCollapsed && (
-          <div className="p-3 border-t border-[#1E293B] bg-[#0B0D11]">
+          <div className="p-3 border-t border-slate-800">
             <button 
               onClick={() => createTab()}
-              className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold uppercase tracking-widest flex items-center justify-center gap-2 transition-all active:scale-95"
+              className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
             >
-              <Plus size={14} /> NEW_TELEMETRY
+              <Plus size={14} /> NEW_REQ
             </button>
           </div>
         )}
@@ -334,26 +569,25 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 bg-[#0B0D11] relative">
         {/* Tab System */}
-        <div className="h-10 flex border-b border-[#1E293B] bg-[#0F1115] shrink-0 overflow-x-auto no-scrollbar">
+        <div className="h-10 flex border-b border-slate-800 bg-[#0F1115] shrink-0 overflow-x-auto no-scrollbar">
           {tabs.map(tab => (
             <div 
               key={tab.id}
               onClick={() => setActiveTabId(tab.id)}
               className={cn(
-                "group flex items-center gap-3 px-4 min-w-[140px] max-w-[200px] border-r border-[#1E293B] cursor-pointer transition-all relative select-none",
-                tab.id === activeTabId ? "bg-[#0B0D11] after:absolute after:bottom-[-1px] after:left-0 after:right-0 after:h-[1px] after:bg-[#0B0D11]" : "hover:bg-black/20"
+                "group flex items-center gap-3 px-4 min-w-[120px] max-w-[180px] border-r border-slate-800 cursor-pointer transition-all relative select-none",
+                tab.id === activeTabId ? "bg-black" : "hover:bg-white/5"
               )}
             >
-              <FileJson size={12} className={tab.id === activeTabId ? 'text-emerald-500' : 'text-slate-600'} />
               <span className={cn(
-                "text-[10px] font-mono truncate uppercase flex-1",
-                tab.id === activeTabId ? "text-slate-200 font-bold" : "text-slate-500"
+                "text-[10px] font-mono truncate uppercase flex-1 tracking-tight",
+                tab.id === activeTabId ? "text-white font-bold" : "text-slate-600"
               )}>
                 {tab.name}
               </span>
               <button 
                 onClick={(e) => closeTab(e, tab.id)}
-                className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-white/5 rounded text-slate-500 hover:text-rose-500 transition-all"
+                className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-white/5 rounded text-slate-600 hover:text-rose-500 transition-all"
               >
                 <X size={10} />
               </button>
@@ -361,40 +595,58 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
           ))}
           <button 
             onClick={() => createTab()}
-            className="flex items-center justify-center px-4 hover:bg-white/5 text-slate-500 transition-colors"
+            className="flex items-center justify-center px-4 border-r border-slate-800 hover:bg-white/5 text-slate-700 transition-colors"
           >
             <Plus size={14} />
           </button>
         </div>
 
         {/* Workspace Panels */}
-        <div className="flex-1 flex flex-col lg:flex-row gap-0 overflow-hidden">
-          {/* Active Tab Panel */}
-          <div className="w-full lg:w-1/2 border-r border-[#1E293B] flex flex-col bg-[#0B0D11]">
-            <div className="p-4 border-b border-slate-800 flex flex-col gap-3 shrink-0">
-              <div className="flex gap-0 shadow-lg shadow-black/20">
+        {view === 'debugger' ? (
+          <div className="flex-1 flex flex-col lg:flex-row gap-0 overflow-hidden">
+            {/* Active Tab Panel */}
+            <div className="w-full lg:w-1/2 border-r border-slate-800 flex flex-col bg-[#0B0D11]">
+            <div className="p-4 border-b border-slate-800 flex flex-col gap-4 shrink-0">
+              <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                {[
+                  { name: 'Reset', url: 'http://localhost:3000/api/race-demo/reset', method: 'POST' },
+                  { name: 'Broken_Buy', url: 'http://localhost:3000/api/orders/broken/place', method: 'POST' },
+                  { name: 'Fixed_Buy', url: 'http://localhost:3000/api/orders/fixed/place', method: 'POST' }
+                ].map(ep => (
+                  <button 
+                    key={ep.name}
+                    onClick={() => updateActiveConfig({ url: ep.url, method: ep.method as any })}
+                    className="text-[9px] font-mono bg-slate-900/50 border border-slate-800 px-2 py-0.5 rounded text-slate-500 hover:text-emerald-500 hover:border-emerald-500/30 transition-all uppercase whitespace-nowrap"
+                  >
+                    {ep.name}
+                  </button>
+                ))}
+              </div>
+              
+              <div className="flex gap-0 ring-1 ring-slate-800 rounded bg-[#0F1115] overflow-hidden focus-within:ring-emerald-500/50 transition-all">
                 <select
                   value={activeTab.config.method}
                   onChange={(e) => updateActiveConfig({ method: e.target.value as any })}
-                  className="bg-slate-800 border border-slate-700 text-amber-500 font-bold text-sm px-4 rounded-l outline-none focus:border-emerald-500/50 cursor-pointer h-12"
+                  className="bg-transparent text-amber-500 font-black text-[11px] px-4 outline-none cursor-pointer border-r border-slate-800 h-10 appearance-none text-center"
                 >
-                  {METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                  {METHODS.map(m => <option key={m} value={m} className="bg-slate-900 border-none">{m}</option>)}
                 </select>
                 <input
                   type="text"
                   value={activeTab.config.url}
                   onChange={(e) => updateActiveConfig({ url: e.target.value })}
-                  placeholder="URL_TELEMETRY_ENDPOINT"
-                  className="flex-1 bg-slate-900 border-y border-slate-700 px-4 text-sm font-mono text-emerald-400 focus:border-emerald-500 outline-none h-12 tracking-tight"
+                  placeholder="URL_ENDPOINT_INPUT"
+                  className="flex-1 bg-transparent px-4 text-[11px] font-mono text-emerald-400 placeholder:text-slate-700 outline-none h-10"
                 />
                 <button
                   onClick={activeTab.loading ? handleAbort : handleRun}
                   className={cn(
-                    "px-8 rounded-r text-sm font-black transition-all text-white active:scale-95 h-12 flex items-center justify-center gap-2",
-                    activeTab.loading ? "bg-rose-600 hover:bg-rose-500" : "bg-emerald-600 hover:bg-emerald-500"
+                    "px-6 text-[10px] font-black transition-all text-white active:scale-95 h-10 flex items-center justify-center gap-2 border-l border-slate-800",
+                    activeTab.loading ? "bg-rose-600/80 hover:bg-rose-600" : "bg-emerald-600/80 hover:bg-emerald-600"
                   )}
                 >
-                  {activeTab.loading ? 'ABORT' : 'EXEC_RUN'}
+                  {activeTab.loading ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
+                  {activeTab.loading ? 'ABORT' : 'EXEC'}
                 </button>
               </div>
 
@@ -402,36 +654,79 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
                 <div className="flex items-center gap-2">
                   <button 
                     onClick={saveToCollection}
-                    className="p-1 px-2 border border-slate-800 rounded text-[9px] font-mono text-slate-500 hover:text-emerald-400 flex items-center gap-1.5 uppercase transition-colors"
+                    className="p-1 px-2 border border-slate-800 rounded text-[9px] font-mono text-slate-500 hover:text-white flex items-center gap-1.5 uppercase transition-colors"
                   >
-                    <Save size={10} /> Save_To_Collection
+                    <Save size={10} /> SAVE
                   </button>
-                  {[1, 10, 50].map(count => (
+                  <div className="h-4 w-px bg-slate-800 mx-1"></div>
+                  {['Single', 'Batch'].map(mode => (
                     <button
-                      key={count}
-                      onClick={() => updateActiveTab({ batchMode: count > 1 })}
+                      key={mode}
+                      onClick={() => updateActiveTab({ batchMode: mode === 'Batch' })}
                       className={cn(
                         "px-2 py-0.5 rounded text-[9px] font-mono border transition-all uppercase",
-                        (count === 1 && !activeTab.batchMode) || (activeTab.batchMode) // Simple toggle for demo
-                          ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400"
-                          : "bg-slate-800/40 border-slate-700 text-slate-500"
+                        (mode === 'Batch' && activeTab.batchMode) || (mode === 'Single' && !activeTab.batchMode)
+                          ? "bg-white text-black border-white"
+                          : "bg-transparent border-slate-800 text-slate-500"
                       )}
                     >
-                      {count === 1 ? 'Single' : 'Batch'}
+                      {mode}
                     </button>
                   ))}
                 </div>
+                <button 
+                  onClick={() => updateActiveTab({ showCurl: !activeTab.showCurl })}
+                  className={cn(
+                    "text-[9px] font-mono flex items-center gap-1 uppercase tracking-widest transition-colors",
+                    activeTab.showCurl ? "text-emerald-400" : "text-slate-600 hover:text-slate-400"
+                  )}
+                >
+                  <Terminal size={10} /> {activeTab.showCurl ? 'HIDE_CURL' : 'SHOW_CURL'}
+                </button>
+                <div className="h-4 w-px bg-slate-800 mx-1"></div>
                 <button 
                   onClick={() => {
                     const resolved = getResolvedConfig(activeTab);
                     const curl = `curl -X ${resolved.method} "${resolved.url}" ${Object.entries(resolved.headers).map(([k,v]) => `-H "${k}: ${v}"`).join(' ')} ${resolved.body ? `-d '${resolved.body}'` : ''}`;
                     navigator.clipboard.writeText(curl);
                   }}
-                  className="text-[9px] font-mono text-slate-500 hover:text-emerald-400 flex items-center gap-1 uppercase tracking-widest"
+                  className="text-[9px] font-mono text-slate-600 hover:text-emerald-400 flex items-center gap-1 uppercase tracking-widest"
                 >
-                  <Copy size={10} /> Copy_Curl
+                  <Copy size={10} /> COPY_CURL
                 </button>
               </div>
+
+              {activeTab.showCurl && (
+                <div className="mt-4 p-4 bg-black border border-emerald-500/20 rounded font-mono space-y-3 relative group overflow-hidden shadow-2xl">
+                  <div className="absolute top-0 left-0 w-[2px] h-full bg-emerald-500"></div>
+                  <div className="flex items-center justify-between opacity-50 group-hover:opacity-100 transition-opacity">
+                    <span className="text-emerald-500 font-bold text-[9px] tracking-[0.2em]">CURL_ORCHESTRATION_PREVIEW</span>
+                    <span className="text-slate-700 text-[9px] font-black">{activeTab.batchMode ? 'CONCURRENT_BATCH' : 'SINGLE_THREAD'}</span>
+                  </div>
+                  <pre className="text-emerald-400 text-xs whitespace-pre-wrap break-all leading-relaxed max-h-60 overflow-y-auto no-scrollbar selection:bg-emerald-500/30">
+                    {(() => {
+                      const resolved = getResolvedConfig(activeTab);
+                      const isGraphql = resolved.method === 'GRAPHQL';
+                      const method = isGraphql ? 'POST' : resolved.method;
+                      const finalHeaders = { ...resolved.headers };
+                      if (isGraphql && !finalHeaders['Content-Type']) {
+                        finalHeaders['Content-Type'] = 'application/json';
+                      }
+                      
+                      const headerString = Object.entries(finalHeaders)
+                        .map(([k,v]) => `-H "${k}: ${v}"`)
+                        .join(' ');
+                        
+                      const baseCurl = `curl -X ${method} "${resolved.url}" ${headerString} ${resolved.body ? `-d '${resolved.body.replace(/'/g, "'\\''")}'` : ''}`;
+                      
+                      if (activeTab.batchMode) {
+                        return `# CONCURRENT_BATCH_MODE (10 REQS / 5 THREADS)\nseq 10 | xargs -I {} -P 5 ${baseCurl}`;
+                      }
+                      return baseCurl;
+                    })()}
+                  </pre>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
@@ -485,14 +780,71 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
                {['POST', 'PUT', 'PATCH'].includes(activeTab.config.method) && (
                 <section>
-                  <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-3 flex items-center gap-2">
-                     <FileJson size={10} /> Payload_JSON
-                  </label>
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                       <FileJson size={10} /> Payload_JSON
+                    </label>
+                    <button 
+                      onClick={() => {
+                        try {
+                          const obj = JSON.parse(activeTab.config.body || '');
+                          updateActiveConfig({ body: JSON.stringify(obj, null, 2) });
+                        } catch (e) {
+                          alert('Invalid JSON');
+                        }
+                      }}
+                      className="text-[9px] font-mono text-slate-600 hover:text-emerald-500 uppercase transition-colors"
+                    >
+                      Prettify_JSON
+                    </button>
+                  </div>
                   <textarea
                     value={activeTab.config.body}
                     onChange={(e) => updateActiveConfig({ body: e.target.value })}
                     className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-emerald-400/80 outline-none h-40 resize-none"
                   />
+                </section>
+               )}
+
+               {activeTab.config.method === 'GRAPHQL' && (
+                <section className="space-y-6">
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-3 flex items-center gap-2">
+                       <Layers size={10} className="text-violet-500" /> GraphQL_Query
+                    </label>
+                    <textarea
+                      value={activeTab.graphqlQuery || ''}
+                      onChange={(e) => updateActiveTab({ graphqlQuery: e.target.value })}
+                      placeholder="query MyQuery { ... }"
+                      className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-violet-400/80 outline-none h-48 resize-none shadow-inner"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                         <Database size={10} className="text-blue-500" /> Variables_JSON
+                      </label>
+                      <button 
+                        onClick={() => {
+                          try {
+                            const obj = JSON.parse(activeTab.graphqlVariables || '{}');
+                            updateActiveTab({ graphqlVariables: JSON.stringify(obj, null, 2) });
+                          } catch (e) {
+                            alert('Invalid JSON');
+                          }
+                        }}
+                        className="text-[9px] font-mono text-slate-600 hover:text-blue-400 uppercase transition-colors"
+                      >
+                        Format_Vars
+                      </button>
+                    </div>
+                    <textarea
+                      value={activeTab.graphqlVariables || ''}
+                      onChange={(e) => updateActiveTab({ graphqlVariables: e.target.value })}
+                      placeholder='{ "id": 1 }'
+                      className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-blue-400/80 outline-none h-24 resize-none"
+                    />
+                  </div>
                 </section>
                )}
             </div>
@@ -515,44 +867,63 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
             )}
           </div>
         </div>
+      ) : (
+          <TestLab 
+            config={activeTab.config}
+            headersList={activeTab.headersList}
+            ws={ws}
+            activeTabId={activeTabId}
+            loading={activeTab.loading}
+            progress={activeTab.progress}
+            results={activeTab.batchResults}
+            onStart={handleStartLabTest}
+            onAbort={handleAbort}
+          />
+        )}
       </main>
     </div>
   );
 }
 
-// Keep original sub-components below with minor tweaks for tabs if needed...
-
-// Sub-components
+// Keep original sub-components below with minor tweaks for tabs if needed...// Sub-components
 function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | null, loading: boolean, onAbort: () => void }) {
-  const [activeResTab, setActiveResTab] = useState<'body' | 'headers' | 'raw'>('body');
+  const [activeResTab, setActiveResTab] = useState<'body' | 'headers' | 'raw' | 'result'>('body');
 
   if (loading) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden bg-black/50 space-y-6">
-        <div className="text-center space-y-4">
-          <div className="relative mx-auto">
-            <Zap size={32} className="text-emerald-500 animate-pulse" />
-            <div className="absolute inset-0 bg-emerald-500/20 blur-xl animate-pulse"></div>
+      <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden bg-black/80 space-y-8">
+        <div className="text-center space-y-4 relative z-10">
+          <div className="relative mx-auto w-12 h-12 flex items-center justify-center">
+            <RefreshCw size={24} className="text-emerald-500 animate-spin" />
+            <div className="absolute inset-0 bg-emerald-500/10 blur-2xl animate-pulse"></div>
           </div>
-          <p className="text-emerald-500/60 font-mono text-[10px] tracking-widest uppercase animate-pulse">Initializing_Curl_Telemetry...</p>
+          <div className="space-y-1">
+            <p className="text-emerald-500/80 font-black text-[12px] tracking-[0.3em] uppercase">EXECUTING_CALL</p>
+            <p className="text-slate-600 font-mono text-[9px] uppercase tracking-widest">Awaiting_Server_Response...</p>
+          </div>
         </div>
         <button 
           onClick={onAbort}
-          className="px-6 py-2 border border-rose-500/30 text-rose-500 font-mono text-[10px] uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all rounded"
+          className="px-8 py-2.5 border border-rose-500/20 text-rose-500 font-black text-[10px] uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all rounded active:scale-95 relative z-10"
         >
-          FORCE_ABORT_TELEMETRY
+          SIGINT_ABORT
         </button>
+
+        {/* Cinematic background scanline */}
+        <div className="absolute inset-0 pointer-events-none opacity-10 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]"></div>
       </div>
     );
   }
 
   if (!result) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-slate-600 bg-black/20">
-        <Terminal size={48} className="mb-4 opacity-5" />
-        <h3 className="font-bold text-slate-500 text-xs tracking-widest">AWAITING_STREAM_INPUT</h3>
-        <p className="text-[10px] mt-2 max-w-xs font-mono uppercase leading-relaxed">
-          Configure headers and payload instrumentation on the left panel to begin telemetry capture.
+      <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-slate-700 bg-[#07080A]">
+        <div className="p-4 rounded-full border-2 border-dashed border-slate-800/50 mb-8 opacity-20">
+          <Terminal size={40} />
+        </div>
+        <h3 className="font-black text-slate-600 text-[11px] tracking-[0.4em] uppercase mb-3">STDIN_AWAITING</h3>
+        <p className="text-[9px] max-w-[200px] font-mono uppercase leading-relaxed text-slate-700 tracking-tighter">
+          Instrument your request configurations to begin automated telemetry capture.
         </p>
       </div>
     );
@@ -561,70 +932,102 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
   const isSuccess = result.status >= 200 && result.status < 300;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex items-center justify-between p-2 px-4 border-b border-slate-800 bg-[#0F1115] shrink-0">
-         <div className="flex items-center gap-4">
-           <span className={cn("text-[10px] font-bold tracking-widest uppercase", isSuccess ? "text-emerald-500" : "text-rose-500")}>
-             Status: {result.status} {isSuccess ? 'OK' : 'ERR'}
-           </span>
-           <span className="text-[10px] font-bold text-slate-500 font-mono uppercase">
-             Time: {result.responseTime}ms
-           </span>
+    <div className="flex flex-col h-full overflow-hidden bg-black">
+      <div className="flex items-center justify-between p-2 px-4 border-b border-slate-900 bg-[#0F1115] shrink-0">
+         <div className="flex items-center gap-6">
+           <div className="flex flex-col">
+              <span className="text-[7px] font-black text-slate-600 uppercase tracking-tighter">HTTP_STATUS</span>
+              <span className={cn("text-[11px] font-black tracking-tight", isSuccess ? "text-emerald-500" : "text-rose-500")}>
+                {result.status} {isSuccess ? 'SUCCESS' : 'FAILURE'}
+              </span>
+           </div>
+           <div className="flex flex-col">
+              <span className="text-[7px] font-black text-slate-600 uppercase tracking-tighter">RESPONSE_TIME</span>
+              <span className="text-[11px] font-black text-blue-400 font-mono">
+                {result.responseTime}ms
+              </span>
+           </div>
          </div>
-         <div className="flex gap-2">
-           <button 
-             onClick={() => setActiveResTab('body')}
-             className={cn("text-[10px] px-2 py-0.5 rounded font-bold transition-all", activeResTab === 'body' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "text-slate-500")}
-           >
-             PRETTY
-           </button>
-           <button 
-             onClick={() => setActiveResTab('headers')}
-             className={cn("text-[10px] px-2 py-0.5 rounded font-bold transition-all", activeResTab === 'headers' ? "bg-blue-500/10 text-blue-400 border border-blue-500/20" : "text-slate-500")}
-           >
-             HEADERS
-           </button>
-           <button 
-             onClick={() => setActiveResTab('raw')}
-             className={cn("text-[10px] px-2 py-0.5 rounded font-bold transition-all", activeResTab === 'raw' ? "bg-slate-800 text-slate-300 border border-slate-700" : "text-slate-500")}
-           >
-             RAW
-           </button>
+         <div className="flex gap-1 bg-black/40 p-1 rounded border border-slate-800">
+           {(['body', 'headers', 'raw', 'result'] as const).map(tab => (
+             <button 
+               key={tab}
+               onClick={() => setActiveResTab(tab)}
+               className={cn(
+                 "text-[9px] px-2 py-1 rounded-[1px] font-black transition-all uppercase tracking-widest", 
+                 activeResTab === tab ? "bg-slate-800 text-white" : "text-slate-600 hover:text-slate-400"
+               )}
+             >
+               {tab}
+             </button>
+           ))}
          </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-6 font-mono text-[11px] leading-relaxed custom-scrollbar selection:bg-emerald-500/40">
+      <div className="flex-1 overflow-auto p-8 font-mono text-xs leading-relaxed custom-scrollbar selection:bg-emerald-500/20 text-emerald-500/90">
         {result.error && activeResTab === 'body' ? (
-           <div className="text-rose-400 bg-rose-500/5 p-4 rounded border border-rose-500/20">
-             <div className="text-[10px] font-bold mb-2 uppercase tracking-widest opacity-70">Crit_Process_Failure</div>
-             {result.error}
+           <div className="text-rose-400 bg-rose-500/5 p-6 rounded border border-rose-500/10 backdrop-blur-sm">
+             <div className="text-[11px] font-black mb-4 uppercase tracking-[0.2em] opacity-80 flex items-center gap-3">
+                <AlertTriangle size={16} /> EXCEPTION_CAUGHT
+             </div>
+             <pre className="whitespace-pre-wrap break-all text-[11px] leading-relaxed opacity-90 font-medium">{result.error}</pre>
            </div>
         ) : (
-           <div className="space-y-0 text-emerald-400/90 whitespace-pre-wrap break-all">
+           <div className="space-y-0 break-all">
              {activeResTab === 'body' && (() => {
+               const bodyStr = result.body.trim();
                try {
-                 const json = JSON.parse(result.body);
+                 const json = JSON.parse(bodyStr);
                  return <JsonPretty data={json} />;
                } catch {
-                 return result.body;
+                 // Check if it looks like HTML
+                 if (bodyStr.startsWith('<!DOCTYPE') || bodyStr.startsWith('<html') || bodyStr.startsWith('<div')) {
+                   return (
+                     <div className="space-y-4">
+                       <div className="flex items-center justify-between p-2 bg-amber-500/10 border border-amber-500/20 rounded">
+                         <div className="flex items-center gap-2 text-amber-500 text-[10px] uppercase font-bold tracking-widest">
+                           <AlertTriangle size={12} /> HTML_DOCUMENT_DETECTED
+                         </div>
+                         <button 
+                           onClick={() => {
+                             const blob = new Blob([result.body], { type: 'text/html' });
+                             const url = URL.createObjectURL(blob);
+                             window.open(url, '_blank');
+                           }}
+                           className="text-[9px] font-bold text-amber-600 hover:text-amber-500 underline uppercase"
+                         >
+                           Render_Page
+                         </button>
+                       </div>
+                       <div className="opacity-60 font-sans text-[10px] bg-slate-900/50 p-4 rounded border border-slate-800 break-words whitespace-pre-wrap max-h-[400px] overflow-y-auto custom-scrollbar">
+                         {result.body}
+                       </div>
+                     </div>
+                   );
+                 }
+                 return <span className="opacity-80 block whitespace-pre-wrap">{result.body}</span>;
                }
              })()}
              
              {activeResTab === 'headers' && (
-               <div className="space-y-1">
+               <div className="space-y-2">
                  {(Object.entries(result.headers) as [string, string][]).map(([k, v]) => (
-                   <div key={k} className="flex gap-3 border-b border-slate-900 pb-1 mb-1">
-                      <span className="text-blue-400 font-bold w-1/3 shrink-0">{k}:</span>
-                      <span className="text-slate-400 flex-1">{v}</span>
+                   <div key={k} className="flex gap-4 border-b border-slate-900 pb-2">
+                      <span className="text-blue-500 font-black w-1/3 shrink-0 uppercase text-[9px] tracking-tight">{k}</span>
+                      <span className="text-slate-400 flex-1 break-all">{v}</span>
                    </div>
                  ))}
                </div>
              )}
 
              {activeResTab === 'raw' && (
-               <div className="text-slate-500 text-[10px]">
+               <div className="text-slate-600 text-[10px] leading-tight whitespace-pre-wrap break-all">
                  {result.rawOutput}
                </div>
+             )}
+
+             {activeResTab === 'result' && (
+               <JsonPretty data={result} />
              )}
            </div>
         )}
@@ -634,42 +1037,50 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
 }
 
 function JsonPretty({ data, level = 0 }: { data: any, level?: number }) {
-   if (data === null) return <span className="text-slate-500">null</span>;
-   if (typeof data === 'string') return <span className="text-emerald-400 break-words overflow-hidden">"{data}"</span>;
-   if (typeof data === 'number') return <span className="text-amber-400">{data}</span>;
-   if (typeof data === 'boolean') return <span className="text-blue-400">{data.toString()}</span>;
+   if (data === null) return <span className="text-slate-500 font-bold italic">null</span>;
+   if (typeof data === 'string') return <span className="text-emerald-400 break-all">"{data}"</span>;
+   if (typeof data === 'number') return <span className="text-amber-400 font-bold">{data}</span>;
+   if (typeof data === 'boolean') return <span className="text-blue-400 font-black">{data.toString()}</span>;
    
    const indent = "  ".repeat(level);
    const nextIndent = "  ".repeat(level + 1);
 
    if (Array.isArray(data)) {
-     if (data.length === 0) return <span>[]</span>;
+     if (data.length === 0) return <span className="text-slate-600">[]</span>;
      return (
-       <span>
-         [<br />
-         {data.map((item, i) => (
-           <span key={i}>
-             {nextIndent}<JsonPretty data={item} level={level + 1} />{i < data.length - 1 ? ',' : ''}<br />
-           </span>
-         ))}
-         {indent}]
-       </span>
+       <div className="font-mono">
+         <span className="text-slate-500">[</span>
+         <div className="ml-4">
+           {data.map((item, i) => (
+             <div key={i} className="py-0.5">
+               <JsonPretty data={item} level={level + 1} />{i < data.length - 1 ? <span className="text-slate-600">,</span> : ''}
+             </div>
+           ))}
+         </div>
+         <span className="text-slate-500">]</span>
+       </div>
      );
    }
 
    if (typeof data === 'object') {
      const entries = Object.entries(data);
-     if (entries.length === 0) return <span>{"{}"}</span>;
+     if (entries.length === 0) return <span className="text-slate-600">{"{}"}</span>;
      return (
-       <span>
-         {"{"}<br />
-         {entries.map(([key, value], i) => (
-           <span key={key}>
-             {nextIndent}<span className="text-blue-400">"{key}"</span>: <JsonPretty data={value} level={level + 1} />{i < entries.length - 1 ? ',' : ''}<br />
-           </span>
-         ))}
-         {indent}{"}"}
-       </span>
+       <div className="font-mono">
+         <span className="text-slate-500">{"{"}</span>
+         <div className="ml-4">
+           {entries.map(([key, value], i) => (
+             <div key={key} className="py-0.5 flex gap-2">
+               <span className="text-blue-400 shrink-0">"{key}"</span>
+               <span className="text-slate-600">:</span>
+               <div className="flex-1 min-w-0">
+                 <JsonPretty data={value} level={level + 1} />{i < entries.length - 1 ? <span className="text-slate-600">,</span> : ''}
+               </div>
+             </div>
+           ))}
+         </div>
+         <span className="text-slate-500">{"}"}</span>
+       </div>
      );
    }
    return <span>{String(data)}</span>;
@@ -680,13 +1091,14 @@ function BatchViewer({ results, progress, concurrency, onAbort }: { results: Cur
   const successCount = results.filter(r => r.status >= 200 && r.status < 300).length;
   const failureCount = results.length - successCount;
   const avgResponseTime = results.length > 0 
-    ? (results.reduce((acc, r) => acc + r.responseTime, 0) / results.length).toFixed(0) 
+    ? (results.reduce((acc, r) => acc + r.responseTime, 0) / results.length)
     : 0;
+  const avgResponseTimeStr = avgResponseTime.toFixed(0);
 
   if (selectedResult) {
     return (
       <div className="flex flex-col h-full bg-black relative">
-        <div className="p-3 px-4 border-b border-slate-800 bg-[#0F1115] flex items-center justify-between shrink-0">
+        <div className="p-3 px-4 border-b border-slate-900 bg-[#0F1115] flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
              <button 
                onClick={() => setSelectedResult(null)}
@@ -712,81 +1124,74 @@ function BatchViewer({ results, progress, concurrency, onAbort }: { results: Cur
   }
 
   return (
-    <div className="flex flex-col h-full bg-black">
-      <div className="p-4 border-b border-slate-800 bg-[#0F1115] space-y-4 shrink-0">
+    <div className="flex flex-col h-full bg-black text-slate-300">
+      <div className="p-6 border-b border-slate-900 bg-[#0F1115] shrink-0 space-y-6">
         <div className="flex items-center justify-between">
-           <h3 className="font-bold text-amber-500 text-[10px] flex items-center gap-2 uppercase tracking-widest">
-             <Layers size={14} className="text-amber-500" /> CONCURRENCY_STREAM_ORCHESTRATOR
-           </h3>
+           <div className="flex items-center gap-3">
+             <div className="p-1.5 bg-amber-500/10 rounded border border-amber-500/20">
+               <Layers size={16} className="text-amber-500" />
+             </div>
+             <div>
+               <h3 className="text-[11px] font-black text-white uppercase tracking-[0.2em] leading-none">STREAM_ORCHESTRATOR</h3>
+               <p className="text-[8px] text-slate-500 font-mono mt-1 uppercase tracking-widest">Multi-Threaded_Execution_Telemetry</p>
+             </div>
+           </div>
            {progress && (
-             <div className="flex items-center gap-2">
-               <div className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                 ACTIVE_EXECUTION
+             <div className="flex items-center gap-3">
+               <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/5 border border-emerald-500/10 rounded">
+                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></div>
+                 <span className="text-[9px] font-black text-emerald-500 uppercase tracking-tighter">RUNNING</span>
                </div>
                <button 
                  onClick={onAbort}
-                 className="text-[9px] font-mono text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20 hover:bg-rose-500 hover:text-white transition-all"
+                 className="text-[9px] font-black text-slate-400 border border-slate-800 px-3 py-1 rounded hover:bg-rose-500 hover:text-white hover:border-rose-500 transition-all uppercase tracking-widest"
                >
-                 ABORT_STREAM
+                 SIGINT
                </button>
              </div>
            )}
         </div>
         
-        <div className="relative pt-1">
-          <div className="flex mb-2 items-center justify-between">
-            <div>
-              <span className="text-[9px] font-mono font-bold inline-block py-1 px-2 uppercase rounded text-slate-500 bg-slate-800/40">
-                Job_Progress: {progress ? progress.completed : results.length} / {progress ? progress.total : results.length}
-              </span>
+        <div className="space-y-2">
+          <div className="flex justify-between items-end">
+            <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">
+              PROGRESS <span className="text-white ml-2 font-mono">{progress ? progress.completed : results.length} / {progress ? progress.total : results.length}</span>
             </div>
-            <div className="text-right">
-              <span className="text-[9px] font-mono font-bold inline-block text-emerald-500">
-                {progress ? ((progress.completed / progress.total) * 100).toFixed(1) : '100'}%
-              </span>
+            <div className="text-[11px] font-black text-emerald-500 font-mono">
+              {progress && progress.total > 0 ? ((progress.completed / progress.total) * 100).toFixed(1) : (results.length > 0 ? '100.0' : '0.0')}%
             </div>
           </div>
-          <div className="overflow-hidden h-1 mb-4 text-xs flex rounded bg-slate-900 border border-slate-800/40">
+          <div className="h-1 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
             <motion.div 
-               style={{ width: `${progress ? (progress.completed / progress.total) * 100 : 100}%` }}
-               className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]"
+               className="h-full bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
                initial={{ width: 0 }}
-               animate={{ width: `${progress ? (progress.completed / progress.total) * 100 : 100}%` }}
+               animate={{ width: `${progress && progress.total > 0 ? (progress.completed / progress.total) * 100 : (results.length > 0 ? 100 : 0)}%` }}
+               transition={{ type: 'spring', damping: 20, stiffness: 40 }}
             />
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-2">
-           <div className="p-2 bg-slate-950 border border-slate-800/60 rounded text-center">
-             <div className="text-[9px] text-slate-500 uppercase font-mono mb-1">Passed</div>
-             <div className="text-sm font-bold text-emerald-500 font-mono tracking-tighter">{successCount}</div>
-           </div>
-           <div className="p-2 bg-slate-950 border border-slate-800/60 rounded text-center">
-             <div className="text-[9px] text-slate-500 uppercase font-mono mb-1">Failed</div>
-             <div className="text-sm font-bold text-rose-500 font-mono tracking-tighter">{failureCount}</div>
-           </div>
-           <div className="p-2 bg-slate-950 border border-slate-800/60 rounded text-center">
-             <div className="text-[9px] text-slate-500 uppercase font-mono mb-1">Avg_MS</div>
-             <div className="text-sm font-bold text-blue-400 font-mono tracking-tighter">{avgResponseTime}ms</div>
-           </div>
-           <div className="p-2 bg-slate-950 border border-slate-800/60 rounded text-center relative overflow-hidden group">
-             <div className="text-[9px] text-slate-500 uppercase font-mono mb-1">Concurrency</div>
-             <div className="text-sm font-bold text-amber-400 font-mono tracking-tighter">{progress ? concurrency : 0}</div>
-             {progress && (
-                <div className="absolute inset-0 bg-amber-500/5 animate-pulse pointer-events-none"></div>
-             )}
-           </div>
+        <div className="grid grid-cols-4 gap-4">
+           {[
+             { label: 'PASSED', val: successCount, color: 'text-emerald-500' },
+             { label: 'FAILED', val: failureCount, color: 'text-rose-500' },
+             { label: 'AVG_LAT', val: `${avgResponseTimeStr}ms`, color: 'text-blue-400' },
+             { label: 'THREAD', val: progress ? concurrency : '-', color: 'text-amber-500' }
+           ].map(stat => (
+             <div key={stat.label} className="space-y-1">
+               <div className="text-[7px] font-black text-slate-600 uppercase tracking-[0.2em]">{stat.label}</div>
+               <div className={cn("text-base font-black font-mono leading-none", stat.color)}>{stat.val}</div>
+             </div>
+           ))}
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col bg-black">
-        <div className="p-2 px-4 border-b border-slate-800 bg-[#0F1115] flex items-center justify-between shrink-0">
-           <span className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-widest">Live_Result_Telemetry</span>
-           <button onClick={() => {}} className="text-[9px] font-mono text-slate-500 hover:text-white flex items-center gap-1">
-              <Trash2 size={10} /> RESET_STREAM
-           </button>
+      <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="px-6 py-2 border-b border-slate-900 bg-black/40 flex items-center justify-between shrink-0">
+           <span className="text-[9px] font-black text-slate-600 uppercase tracking-[0.3em]">TELEMETRY_LOGS</span>
+           <div className="text-[8px] font-mono text-slate-700 tracking-tighter uppercase">SESSION_RETAIN: 50</div>
         </div>
-        <div className="flex-1 overflow-y-auto p-2 custom-scrollbar space-y-1 bg-black">
+        <div className="flex-1 overflow-y-auto p-4 px-6 custom-scrollbar space-y-1 bg-black">
           <AnimatePresence initial={false}>
             {[...results].slice(-50).reverse().map((res, i) => (
               <motion.div 
@@ -794,32 +1199,27 @@ function BatchViewer({ results, progress, concurrency, onAbort }: { results: Cur
                 initial={{ x: -10, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
                 onClick={() => setSelectedResult(res)}
-                className="flex items-center gap-3 p-1.5 hover:bg-emerald-500/5 bg-slate-950/20 border border-slate-900 hover:border-emerald-500/30 transition-all rounded cursor-pointer group"
+                className="group flex border-l-[2px] border-slate-800 hover:border-white py-1.5 pl-4 hover:bg-white/5 transition-all cursor-pointer items-center min-h-[32px]"
               >
-                <div className={`w-1 h-6 rounded-full shrink-0 transition-all group-hover:h-8 ${res.status >= 200 && res.status < 300 ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
-                <div className="flex-1 min-w-0">
-                   <div className="flex items-center justify-between mb-0.5">
-                      <span className="text-[9px] font-mono text-slate-600 group-hover:text-emerald-500/70 transition-colors">SEQ__{results.length - i}</span>
-                      <span className="text-[9px] font-mono text-slate-500 uppercase tracking-tighter group-hover:text-slate-300 transition-colors">{res.responseTime}MS_LAT</span>
-                   </div>
-                   <div className="flex items-center gap-2">
-                      <span className={cn("text-[10px] font-bold font-mono tracking-widest", res.status >= 200 && res.status < 300 ? "text-emerald-500" : "text-rose-500")}>
-                        {res.status}
-                      </span>
-                      <span className="text-[9px] font-mono text-slate-600 truncate opacity-60 uppercase group-hover:opacity-100 transition-opacity">{res.id}</span>
-                   </div>
+                <span className="text-slate-600 w-16 shrink-0 font-mono text-[9px] font-black">-{res.responseTime}ms</span>
+                <span className={cn("w-14 font-black text-[10px]", res.status < 300 ? "text-emerald-500" : "text-rose-500")}>
+                  [{res.status}]
+                </span>
+                <span className="text-slate-500 flex-1 truncate uppercase tracking-tighter font-mono group-hover:text-white transition-colors text-[9px]">
+                  INSTANCE::{res.id.split('-').pop()} ➔ {res.status < 400 ? 'SUCCESS' : 'FAILURE'}
+                </span>
+                <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className="text-[8px] font-black text-white bg-slate-800 px-2 py-0.5 rounded tracking-widest">DRYLOAD</span>
                 </div>
               </motion.div>
             ))}
           </AnimatePresence>
           {results.length === 0 && !progress && (
-            <div className="h-full flex items-center justify-center p-20 text-center">
-               <div className="space-y-3">
-                 <div className="w-10 h-10 border border-slate-800 rounded-full mx-auto flex items-center justify-center animate-pulse">
-                    <div className="w-1 h-1 bg-slate-700 rounded-full"></div>
-                 </div>
-                 <p className="text-[10px] text-slate-600 font-mono uppercase tracking-[0.2em]">Awaiting_Stream_Init</p>
-               </div>
+            <div className="h-full flex flex-col items-center justify-center opacity-20 text-center space-y-4">
+              <div className="w-12 h-12 border-2 border-dashed border-slate-700 rounded-full flex items-center justify-center animate-spin-slow">
+                 <Activity size={24} />
+              </div>
+              <div className="uppercase tracking-[0.4em] font-black text-[10px]">Standby_Stream_Init</div>
             </div>
           )}
         </div>

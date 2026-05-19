@@ -20,8 +20,39 @@ async function startServer() {
   let globalBalance = 1000;
   let transactionLogs: any[] = [];
 
-  // Race Demo Routes
-  app.post("/race-demo/reset", (req, res) => {
+  // API Routes
+  app.get("/api/history", async (req, res) => {
+    try {
+      const history = await Store.getHistory();
+      res.json(history);
+    } catch (error: any) {
+      console.error("Error fetching history:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/collections", async (req, res) => {
+    try {
+      const collections = await Store.getCollections();
+      res.json(collections);
+    } catch (error: any) {
+      console.error("Error fetching collections:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/collections", async (req, res) => {
+    try {
+      await Store.saveCollection(req.body);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error saving collection:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Moved Race Demo Routes under /api
+  app.post("/api/race-demo/reset", (req, res) => {
     globalBalance = 1000;
     transactionLogs = [];
     res.json({ 
@@ -31,11 +62,11 @@ async function startServer() {
     });
   });
 
-  app.get("/race-demo/balance", (req, res) => {
+  app.get("/api/race-demo/balance", (req, res) => {
     res.json({ balance: globalBalance });
   });
 
-  app.post("/orders/broken/place", async (req, res) => {
+  app.post("/api/orders/broken/place", async (req, res) => {
     // Intentional Race Condition: Read -> Wait -> Write
     const currentBalance = globalBalance;
     const amount = req.body.amount || 10;
@@ -53,9 +84,8 @@ async function startServer() {
     }
   });
 
-  app.post("/orders/fixed/place", async (req, res) => {
-    // Atomic-like update (JS is single threaded, so simple assignment is atomic,
-    // but in a real DB we'd use a transaction. Here we just don't capture the balance early).
+  app.post("/api/orders/fixed/place", async (req, res) => {
+    // Atomic-like update
     const amount = req.body.amount || 10;
     
     if (globalBalance >= amount) {
@@ -68,32 +98,22 @@ async function startServer() {
     }
   });
 
-  // API Routes
-  app.get("/api/history", async (req, res) => {
-    const history = await Store.getHistory();
-    res.json(history);
-  });
-
-  app.get("/api/collections", async (req, res) => {
-    const collections = await Store.getCollections();
-    res.json(collections);
-  });
-
-  app.post("/api/collections", async (req, res) => {
-    await Store.saveCollection(req.body);
-    res.json({ success: true });
-  });
-
   app.post("/api/execute", async (req, res) => {
     const config: RequestConfig = req.body;
+    console.log(`Executing request to: ${config.url}`);
     
     try {
       const result = await CurlEngine.execute(config);
       await Store.addToHistory({ request: config, result });
       res.json(result);
     } catch (error: any) {
+      console.error("Execution error:", error);
       res.status(500).json({ error: error.message });
     }
+  });
+
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
   // WebSocket for real-time batch execution
@@ -116,17 +136,18 @@ async function startServer() {
         
         if (data.type === "run-batch") {
           const config: BatchConfig = data.payload;
+          const tabId = data.tabId;
           const controller = new AbortController();
           activeBatches.set(ws, controller);
           
           RequestRunner.runBatch(config, (progress) => {
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "progress", ...progress }));
+              ws.send(JSON.stringify({ type: "progress", tabId, ...progress }));
             }
           }, controller.signal).then(async (results) => {
             activeBatches.delete(ws);
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "complete", results }));
+              ws.send(JSON.stringify({ type: "complete", tabId, results }));
             }
             // Add a summary to history
             if (results.length > 0) {
@@ -164,8 +185,15 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    
+    // Serve SPA for non-API routes
+    app.get(/^(?!\/api).*/, (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
+    });
+
+    // API 404 handler
+    app.all("/api/*", (req, res) => {
+      res.status(404).json({ error: `API endpoint ${req.method} ${req.url} not found` });
     });
   }
 
