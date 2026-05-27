@@ -1,0 +1,65 @@
+name: Continuous Deployment to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to AWS EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            echo "=== Starting redeployment process on EC2 ==="
+            
+            # Ensure the project directory exists
+            PROJECT_DIR=${{ secrets.EC2_PROJECT_PATH }}
+            if [ -z "$PROJECT_DIR" ]; then
+              PROJECT_DIR="~/hypercurl"
+            fi
+            
+            # Create directory if it doesn't exist
+            mkdir -p $PROJECT_DIR
+            cd $PROJECT_DIR
+            
+            # Initialize git repository if not already set up
+            if [ ! -d ".git" ]; then
+              echo "No git repository found in $PROJECT_DIR. Initializing..."
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              # Pull the latest code on the correct branch
+              echo "Git repository found. Pulling latest commits..."
+              git fetch --all
+              git reset --hard origin/${{ github.ref_name }}
+            fi
+
+            # Double check that a .env file exists. 
+            # If not, initialize one from .env.example (user will need to edit this to set actual tokens)
+            if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+              echo "Initializing .env file from .env.example..."
+              cp .env.example .env
+              echo "Please make sure to SSH into your EC2 and configure actual values in .env later!"
+            fi
+
+            # Rebuild and restart the containers with zero downtime downtime logic
+            echo "Rebuilding and restarting docker compose services..."
+            docker compose down
+            docker compose up -d --build
+
+            # Clean up dangling images to prevent running out of disk space on small EC2 instances
+            echo "Pruning unused Docker images and build caches..."
+            docker image prune -af
+
+            echo "=== Redeployment Successful! Application is active. ==="

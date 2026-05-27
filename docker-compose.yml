@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  hypercurl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hypercurl-app
+    restart: unless-stopped
+    ports:
+      # Maps host port 80 (standard HTTP) to container port 3000 by default.
+      # You can override this using a HOST_PORT variable in your .env file.
+      - "${HOST_PORT:-80}:3000"
+    environment:
+      - NODE_ENV=production
+      # Pulls GEMINI_API_KEY and APP_URL from your active .env file on the EC2 instance.
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - APP_URL=${APP_URL}
+      - PORT=3000
+    volumes:
+      # Persists saved request collections and execution history across container redeployments.
+      - ./data:/app/data
