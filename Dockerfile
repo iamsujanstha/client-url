@@ -29,8 +29,8 @@ RUN npm ci --omit=dev
 # Copy only the compiled dist folder containing client assets and built server
 COPY --from=builder /app/dist ./dist
 
-# Copy custom data directory if any, to serve as base reference
-COPY --from=builder /app/data ./data
+# Create data directory for persistence
+RUN mkdir -p data
 
 # Expose the API and Web server port
 EXPOSE 3000
