@@ -1,249 +1,226 @@
 # DevOps Operations Manual: Continuous Deployment Blueprint
 ### AWS EC2 + GitHub Actions CI/CD + Docker Compose + Cloudflare DNS/SSL Integration
 
-This operations manual serves as the standard, repository-independent reference blueprint for setting up, managing, and maintaining production-grade containerized environments on **AWS EC2** using **GitHub Actions** and **Docker Compose**, behind a **Cloudflare CDN Reverse Proxy** with full SSL/TLS encryption.
+This operations manual serves as the standard, company-wide reference blueprint for provisioning, configuring, and maintaining production-grade containerized environments on **AWS EC2** using **GitHub Actions** and **Docker Compose**, behind a **Cloudflare CDN Active Reverse Proxy** with full edge SSL/TLS encryption.
 
 ---
 
-## Document Metadata & Copy to Google Docs Instructions
+## Document Metadata & Google Docs Copy Instructions
 * **Author:** Principal DevOps Lead / Site Reliability Engineer
-* **Target Audience:** DevOps Engineers, Software Engineers, Host Administrators
-* **Formatting Tip:** To export this document to a Google Doc, select all text (`Ctrl+A` or `Cmd+A`), copy, and paste it directly into a fresh Google Document. The headers, code snippets, and structural tables will render with polished typography automatically.
+* **Target Audience:** DevOps Engineers, Software Engineers, Cloud Administrators
+* **How to Import into Google Docs:** 
+  1. Highlight and copy this entire guide (`Ctrl+A` or `Cmd+A` -> Copy).
+  2. Create a new Google Document.
+  3. Paste the contents into the document. Rich-text formatting (headers, tables, bold indices, code snippets) will automatically render in highly professional, polished styles.
 
 ---
 
-## Section 1: Architectural System Topology
+## Section 1: End-to-End System Topology
 
-The system uses a **Declarative, Push-Based deployment philosophy** that isolates all build workloads inside secure GitHub-hosted virtual runners. This prevents memory or CPU exhaustion on lightweight AWS EC2 instances (such as `t3.micro` or `t3.small`).
+The deployment architecture utilizes a **Server-Side, Push-Based deployment model** designed to keep resource usage on the EC2 host virtual machine (such as a cheap `t3.micro` or `t3.small` instance) at absolutely zero during the build phase. All heavy compilations and source analysis are handled within isolated GitHub-hosted runners before deploying cleanly over a secure SSH corridor.
 
 ```
-                              ┌────────────────────────┐
-                              │  Developer GIT Push    │
-                              └───────────┬────────────┘
-                                          │
-                                          ▼
-                              ┌────────────────────────┐
-                              │     GitHub Actions     │
-                              │  (Linter & Compilations)│
-                              └───────────┬────────────┘
-                                          │ (Triggers remote SSH deploy)
-                                          ▼
-                              ┌────────────────────────┐
-                              │      AWS EC2 Host      │
-                              │ (Public Port 80 / 443) │
-                              └───────────┬────────────┘
-                                          │
-                  ┌───────────────────────┴───────────────────────┐
-                  ▼ (Direct proxy)                                ▼ (Inward routing)
-     ┌────────────────────────┐                      ┌────────────────────────┐
-     │  Cloudflare Edge DNS   │                      │ Docker Compose Runtime │
-     │ (SSL Termination)      │                      │ (NodeJS Production)    │
-     └────────────────────────┘                      └────────────────────────┘
++------------------------+
+|   Developer GIT Push   |
++-----------┬------------+
+            | (Pushes to main/master branch)
+            ▼
++------------------------+
+| GitHub Actions Runner  | <--- Triggers Linting, Checks, and Node Compilation
++-----------┬------------+
+            | (Opens secure SSH Shell Connection via Port 22)
+            ▼
++------------------------+
+|   Target AWS EC2 Host  | <--- Coordinates git alignment, environment variables,
++-----------┬------------+      and invokes low-downtime Docker container recreation
+            |
+            | (Direct Inward Routing via Docker Port Mappings)
+            ▼
++------------------------+
+|  Docker Compose Engine | <--- Exposes Application to HTTP Host Port 80
++-----------┬------------+
+            ▲
+            | (Secure Edge Proxy & CDN Management)
+            ▼
++------------------------+
+| Cloudflare DNS Routing | <--- Manages Custom Domain Names and SSL/TLS Handshakes
++------------------------+
 ```
-
-### Core Design Principles:
-1. **Immutable Containerization:** Applications are built into multi-stage Docker images to guarantee identical runtime environments between staging and production.
-2. **Stateless Service Routing:** Persistent data (e.g., local storage databases, request logs, sqlite files) is isolated from container runtimes via local volume bindings (`./data:/app/data`).
-3. **Edge Cryptography Encryption:** SSL/TLS handshake security is managed at the Cloudflare network edge, allowing your application servers to run high-performance lightweight runtimes without complex static local certificate configurations.
 
 ---
 
-## Section 2: AWS EC2 Host Instance Alignment
+## Section 2: STEP 1 — AWS EC2 Provisioning & Security Group Setup
 
-### Step 2.1: Target Host Hardware Guidelines
-For standard web microservices, the following minimal baseline specifications apply:
-* **Operating System:** Ubuntu Server 22.04 LTS or 24.04 LTS (64-bit x86/ARM).
-* **Network Capability:** Assigned Elastic IP Address (static IPv4 address) to prevent URL routing failure on host system reboots.
+To ensure traffic reaches your servers successfully under various workloads, configure your target EC2 instance on AWS with absolute precision:
 
-### Step 2.2: AWS Security Group Rule Configuration (Inward Rules)
-Ensure the EC2 Security Group is configured to allow traffic on the following ports:
+### 2.1 Navigate AWS Console to Edit Security Groups
+1. Log into your **AWS Management Console**.
+2. Search for and select **EC2** in the services bar.
+3. In the left navigation pane under **Network & Security**, click on **Security Groups**.
+4. Single-click the security group associated with your target EC2 instance.
+5. In the bottom-right panel, click on the **Inbound rules** tab, then click the **Edit inbound rules** button.
 
-| Security Group Rule ID | Traffic Protocol / Type | Port Range | Source / Access | Purpose / Description |
+### 2.2 Add Specific Firewall Inbound Rules
+Configure exactly three rules as shown in the security matrix below. Removing standard defaults prevents port blockage issues:
+
+| Security Group Rule ID | Port Range | Protocol | Source / IP CIDR | Technical Purpose / Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `sgr-02dbe11...` | **HTTP (TCP)** | `80` | `0.0.0.0/0` | Handles inbound HTTP web traffic and Cloudflare edge handshakes |
-| `sgr-0692385...` | **SSH (TCP)** | `22` | `0.0.0.0/0` (or company subnet) | Secure continuous integration (CI/CD) deployments and terminal shells |
-| `sgr-0ae6f06...` | **HTTPS (TCP)** | `443` | `0.0.0.0/0` | Managed custom edge routes and secure user sessions |
+| `sgr-HTTP` | **`80`** | `TCP` | `0.0.0.0/0` | **Public HTTP Web Access:** Allows Cloudflare edge networks to route customer queries directly into the host machine. |
+| `sgr-SSH` | **`22`** | `TCP` | `0.0.0.0/0` (or company IP range) | **SSH Management:** Essential for GitHub Actions CI/CD to connect, authenticate with private keys, and build code. |
+| `sgr-HTTPS` | **`443`** | `TCP` | `0.0.0.0/0` | **Public HTTPS Web Access:** Retained to allow secure edge redirects and custom reverse proxies. |
+
+*Click the **Save rules** button immediately at the bottom right of the panel to apply the configurations.*
 
 ---
 
-## Section 3: Ubuntu host Provisioning Script
+## Section 3: STEP 2 — EC2 Host System Initialization & Provisioning Script
 
-Perform a secure terminal login to your clean EC2 host instance:
+When starting with a completely fresh Ubuntu instance, running a basic command like `sudo apt-get install docker-compose-plugin` will fail with the error `E: Unable to locate package docker-compose-plugin`. This occurs because standard Ubuntu base repositories do not contain Docker’s official container orchestration tools by default.
+
+### 3.1 Establishing Connection to the Host
+Connect to your EC2 instance via your terminal:
 ```bash
-ssh -i "your-key-file.pem" ubuntu@YOUR_EC2_STATIC_IP
+ssh -i "your-aws-pem-key.pem" ubuntu@YOUR_EC2_PUBLIC_IP
 ```
 
-Run this automated setup script. This compiles GPG keys, sets up official repositories, and installs Docker Engine and Docker Compose V2:
+### 3.2 Automated Host Setup Script
+Execute this script to configure Docker's official GPG keychains, align official package repositories, configure execution binaries, and solve standard UNIX permissions issues:
 
 ```bash
 #!/usr/bin/env bash
+# Official Docker & Docker Compose V2 Provisioning Script for Ubuntu LTS
 set -euo pipefail
 
 echo "=========================================================="
-echo "ST_01: Refreshing system local registry cache..."
+echo "ST_01: Refreshing system registries and upgrading core libraries..."
 echo "=========================================================="
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y curl git apt-transport-https ca-certificates gnupg lsb-release
 
 echo "=========================================================="
-echo "ST_02: Fetching and installing Docker Official GPG keys..."
+echo "ST_02: Adding Docker's Official Secure Cryptographic GPG Key..."
 echo "=========================================================="
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --silent --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
 echo "=========================================================="
-echo "ST_03: Aligning stable Ubuntu repository sources list..."
+echo "ST_03: Adding Official Docker Repository to APT Sources..."
 echo "=========================================================="
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 echo "=========================================================="
-echo "ST_04: Installing Docker Engine, CLI, Containerd, and Compose V2..."
+echo "ST_04: Installing Docker Engine, Docker CLI, and Compose V2 Plugin..."
 echo "=========================================================="
+# This resolves the "Unable to locate package docker-compose-plugin" error
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 echo "=========================================================="
 echo "ST_05: Resolving Unix System Docker Socket Permissions..."
 echo "=========================================================="
-# This resolves the common "permission denied while connecting to docker daemon socket" error
+# Resolves the connection permission denied issue: "permission denied while trying to connect to the Docker daemon socket"
 sudo usermod -aG docker $USER
 
 echo "=========================================================="
-echo "SYSTEM CHECKS COMPLETED"
+echo "PROVISIONING COMPLETE"
 echo "=========================================================="
-echo "Please re-execute shell environment settings using: newgrp docker"
-echo "To verify proper build installation, run: docker compose version"
+echo "CRITICAL: Re-initialize terminal system group permissions by typing: 'newgrp docker'"
+echo "Verify successful installations by running: 'docker compose version' and 'docker --version'"
 ```
 
-To activate group credentials immediately without logging out of the SSH terminal, run:
+### 3.3 Critical Group Authorization Command
+To activate user socket groupings immediately without logging out of the SSH shell terminal:
 ```bash
 newgrp docker
 ```
+*If a permission denied error persists when running `docker compose ps` later, verify using `groups` that `docker` is listed. Alternatively, close the terminal window and re-open the SSH session.*
 
 ---
 
-## Section 4: GitHub Repository Actions Configuration
+## Section 4: STEP 3 — GitHub Secrets Configuration for CI/CD
 
-### Step 4.1: Encrypted Organization/Repository Secrets
-Navigate to your **GitHub Code Repository** -> **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret** and create the following four variables:
+To authorize your build pipeline to connect securely with AWS without committing plain-text credentials, configure the following secrets inside GitHub:
 
-| Secret Key Identifier | Example Reference Value | Technical Integration Role |
-| :--- | :--- | :--- |
-| **`EC2_HOST`** | `54.210.150.85` *(or your Elastic IP)* | The destination host endpoint pointing directly to your AWS EC2. |
-| **`EC2_USER`** | `ubuntu` | Standard default shell root profile name assigned by AWS for Ubuntu configurations. |
-| **`EC2_SSH_KEY`** | `-----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----` | Your AWS PEM private key. Ensure both the header and footer are copy-pasted completely. |
-| **`EC2_PROJECT_PATH`** | `/home/ubuntu/hypercur` | System directory on the remote target EC2 host where the repository files are cloned and built. |
+### 4.1 Navigation Guide inside GitHub
+1. Open your code repository on **GitHub**.
+2. Click the **Settings** tab (the gear icon listed in the main horizontal menu under your repository name).
+3. On the left sidebar menu, look for the **Security** grouping, expand **Secrets and variables**, then click on **Actions**.
+4. Under the **Repository secrets** tab, click **New repository secret**.
 
----
+### 4.2 Key/Value Configuration Requirements
 
-## Section 5: The CI/CD Pipeline Configuration File (`.github/workflows/deploy.yml`)
+Add these four secrets exactly as outlined below to construct the pipeline handshake:
 
-Create or update your repository's build pipeline at `.github/workflows/deploy.yml`:
-
-```yaml
-name: Continuous Integration & Deployment Pipeline
-
-on:
-  push:
-    branches:
-      - main
-      - master
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js Environment
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install Development Dependencies
-        run: npm ci
-
-      - name: Execute Code Linting
-        run: npm run lint
-
-      - name: Execute Assembly Compilation Build
-        run: npm run build
-
-      - name: Execute Code Deploy via SSH Tunnel
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          script: |
-            # Create deployment path if missing
-            mkdir -p ${{ secrets.EC2_PROJECT_PATH }}
-            
-            # Check if repository already exists, if not clone it, else reset and pull
-            if [ -d "${{ secrets.EC2_PROJECT_PATH }}/.git" ]; then
-              cd ${{ secrets.EC2_PROJECT_PATH }}
-              echo "Existing repository found. Pulling latest code..."
-              git fetch --all
-              git reset --hard origin/${{ github.ref_name }}
-            else
-              echo "No repository found at goal path. Initializing Git Clone..."
-              git clone -b ${{ github.ref_name }} https://github.com/${{ github.repository }}.git ${{ secrets.EC2_PROJECT_PATH }}
-              cd ${{ secrets.EC2_PROJECT_PATH }}
-            fi
-
-            # Environment Verification & Bootstrapping
-            if [ ! -f .env ]; then
-              echo "Instantiating default environment settings from .env.example..."
-              cp .env.example .env
-              echo "Please configure real secrets (such as GEMINI_API_KEY) in .env on the host!"
-            fi
-
-            # Resolve compose engine path natively
-            if docker compose version >/dev/null 2>&1; then
-              COMPOSE_CMD="docker compose"
-            elif docker-compose --version >/dev/null 2>&1; then
-              COMPOSE_CMD="docker-compose"
-            else
-              echo "=== ERROR: Docker Compose is NOT installed on your EC2 host instance ==="
-              exit 1
-            fi
-
-            echo "Identified active execution engine: $COMPOSE_CMD"
-
-            # Execute non-disruptive continuous builds
-            echo "Rebuilding and restructuring active services..."
-            $COMPOSE_CMD down
-            $COMPOSE_CMD up -d --build
-
-            # Free up drive partitions by cleaning intermediate caches
-            echo "Removing residual orphan and dangling Docker images..."
-            docker image prune -f
-            echo "CI/CD Deployment complete and healthy!"
-```
+1. **`EC2_HOST`**: The **Public IPv4 Address** or **Elastic IP** of your EC2 instance (e.g., `54.210.xx.xx`). If you are utilizing a domain name behind active proxy protection, you *must* use your raw public IP address here, because proxies block direct SSH handshakes.
+2. **`EC2_USER`**: Set this to **`ubuntu`** (this is the standard immutable default administrative username for vanilla AWS Ubuntu AMIs).
+3. **`EC2_SSH_KEY`**: Paste the entire contents of your private key file (e.g., `your-aws-pem-key.pem` file downloaded from AWS during key-pair generation). It must include of all lines:
+   ```text
+   -----BEGIN RSA PRIVATE KEY-----
+   MIIEpAIBAAKCAQEA08d20K...
+   ...
+   -----END RSA PRIVATE KEY-----
+   ```
+   *Ensure there is a single blank line at the bottom when pasting to prevent parse failures.*
+4. **`EC2_PROJECT_PATH`**: The desired absolute deployment target folder path inside the machine's home storage space.
+   *Recommended value:* `/home/ubuntu/hypercur`
 
 ---
 
-## Section 6: Replacing Raw IP Views with Cloudflare Domains
+## Section 5: Step-by-Step Resolution of Real-World Production Failures
 
-To transition your system from a raw IP address (e.g., `http://54.210.150.85`) to a polished, professional custom domain (e.g., `https://yourdomain.com`), complete the steps below:
+During our build system alignment, we isolated and fixed the following real-world DevOps failures:
 
-### Step 6.1: Cloudflare DNS Mapping Configuration
-1. Log into your **Cloudflare Dashboard** and select your active registered domain name.
-2. Navigate to **DNS** -> **Records**.
-3. Clear any conflicting `A` records mapped to old host servers.
-4. Add the following **two new DNS records**:
+### 5.1 Docker Copy Cache Error (`/app/data: not found`)
+* **The Failure:** 
+  During execution of the multi-stage Dockerfile compiler assembly, the runner crashed during Stage 2:
+  ```text
+  failed to solve: failed to compute cache key: failed to calculate checksum of ref... "/app/data": not found
+  ```
+* **The Root Cause:** 
+  The codebase utilized a `COPY --from=builder /app/data ./data` line inside the Dockerfile. Because `/app/data` is configured inside the `.dockerignore` or might not exist in the temporary builder stage, Docker was unable to locate it, causing the entire container compilation to crash.
+* **The DevOps Solution:**
+  We replaced the hard copy step with a robust runtime instruction:
+  ```dockerfile
+  # Clean, modern approach — initialize the persistence directory layout locally at run-time
+  RUN mkdir -p data
+  ```
+  This creates the data container namespace cleanly at start-up time and avoids structural build failures, allowing you to use `./data` mount-points consistently on your host systems.
 
-| Type | Name | Content (Target IP) | Proxy Status | TTL | Description |
+### 5.2 UNIX Socket Permission Denied Error (`/var/run/docker.sock: permission denied`)
+* **The Failure:** 
+  Executing commands like `docker compose ps` results in a daemon socket connection blockage:
+  ```text
+  permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock
+  ```
+* **The Root Cause:** 
+  By default, the host's `/var/run/docker.sock` socket is protected and owned by the `root` administrative profile. Standard users do not have access rights to this connection channel unless they are explicitly enrolled in the system's `docker` permissions group.
+* **The DevOps Solution:**
+  Run these commands to verify group enrollment and apply socket updates:
+  ```bash
+  sudo usermod -aG docker ubuntu
+  newgrp docker
+  ```
+
+---
+
+## Section 6: STEP 4 — Transitioning raw IP views into Cloudflare Domains
+
+To transition your system from a raw IP address (e.g. `http://54.210.150.85`) to a polished, professional custom domain (e.g. `https://yourdomain.com`), follow this setup checklist:
+
+### 6.1 Cloudflare DNS Setup
+1. Log in to your **Cloudflare Dashboard**.
+2. Select your registered domain name, then navigate to **DNS** -> **Records** page on the left menu.
+3. Remove any pre-existing routing `A` records to avoid hostname conflicts.
+4. Add the following records:
+
+| Record Type | Name (Host) | IPv4 Target IP Address | Proxy Status | TTL | Technical Purpose |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`A`** | `@` *(Root Domain)* | `YOUR_EC2_PUBLIC_IP` | **Proxied (Orange Cloud)** | Auto | Routes base domain with secure Cloudflare protection |
-| **`CNAME`**| `www` | `yourdomain.com` *(Root Domain)* | **Proxied (Orange Cloud)** | Auto | Routes www subdomains to the base location |
+| **`A`** | `@` | `YOUR_EC2_PUBLIC_IP` | **Proxied (Orange Cloud - ON)** | Auto | Directs base root domain traffic securely through to your public AWS EC2 host IP |
+| **`CNAME`** | `www` | `yourdomain.com` | **Proxied (Orange Cloud - ON)** | Auto | Redirects `www.yourdomain.com` directly back onto your root domain |
 
-*Example mapping configuration mapping root domains:*
+*Example configuration values:*
 * `Type: A`
 * `Name: @`
 * `IPv4 Address: 54.210.150.85`
@@ -251,63 +228,59 @@ To transition your system from a raw IP address (e.g., `http://54.210.150.85`) t
 
 ---
 
-### Step 6.2: Configure Secure SSL/TLS Encryption
-To prevent security warnings in browser views and ensure all traffic is encrypted, navigate to your domain settings, choose **SSL/TLS** -> **Overview**, and configure the security rules as follows:
+### 6.2 SSL/TLS Mode Configuration
+Cloudflare handles complete edge SSL termination, meaning visitors access your site securely via HTTPS without your application needing to manage or renew local certificate key-pairs manually.
 
-```
-[Browser Client]  ◄========================►  [Cloudflare Edge]  ◄========================►  [AWS EC2 Server]
-                      Encrypted HTTPS                              Encrypted HTTP/HTTPS
-```
-
-#### Choose the Optimal SSL/TLS Mode:
-* **Recommended Mode: Flexible (Easiest Integration)**
-  * **How it works:** Cloudflare manages the complete, secure HTTPS handshakes on their edge servers with public users. Traffic traveling between Cloudflare and your AWS EC2 host runs through high-performance HTTP on Port 80.
-  * **Benefit:** You don't need to configure complex SSL certificates (like certbot or Let's Encrypt renewal engines) inside your Docker container or your host system files!
-
-* **Advanced Option: Full (Strict)**
-  * **When to use:** For enterprise-grade compliance where encryption is required end-to-end.
-  * **Implementation:** Generate a free Cloudflare Origin Certificate, save the cert/key files on your EC2, and configure a Docker-placed Nginx/Caddy proxy inside your Compose structure to listen on port `443` inside private networking layers.
+1. In the Cloudflare left navigation sidebar, click on **SSL/TLS**.
+2. Under the **Overview** section, click the **Flexible** or **Full** encryption option card:
+   * **`Flexible (Recommended for Ease)`**: Cloudflare manages all HTTPS connections from visitors' browsers to the CDN Edge. Communications traveling from Cloudflare edge nodes down to your EC2 instance are routed cleanly via standard HTTP on Port 80.
+   * **How it saves resource costs:** This mode allows your Docker app container to listen directly on port `3000` mapped onto host Port `80` without installing extra Nginx certificates or certbot renewal scripts internally.
 
 ---
 
-### Step 6.3: Resolve the "Too Many Redirects" Loop Error (CRITICAL)
-If you configure your domain name and see an error saying `ERR_TOO_MANY_REDIRECTS`, this means your application is trying to force HTTPS redirects, while Cloudflare’s **Flexible** mode is requesting the app via HTTP on Port 80. This causes an infinite redirect loop.
-
-#### Prevention checklist:
-1. Ensure your Cloudflare **SSL/TLS Mode** is set to **Flexible** or **Full**.
-2. If using **Flexible**, ensure your Node.js code or reverse proxies do not contain global redirection middleware like `secure-express-redirect` or absolute URL redirects back to `https://`.
-3. To enforce safe redirection globally, navigate to **Cloudflare SSL/TLS** -> **Edge Certificates**, and toggle **Always Use HTTPS** to **ON**. Cloudflare will handle this mapping natively at their edge network, bypassing your server completely.
+### 6.3 Resolving the Infinite REDIRECT Loop Error (`ERR_TOO_MANY_REDIRECTS`)
+* **The Failure:** 
+  When you access your newly configured domain, the browser page fails to load and returns a web crash block stating `ERR_TOO_MANY_REDIRECTS`.
+* **The Root Cause:** 
+  If your application server is explicitly configured to detect non-secure requests and redirect users back to `https://`, a conflict occurs. Under Cloudflare’s **Flexible SSL/TLS mode**, Cloudflare routes its inward requests down to your AWS EC2 using HTTP on Port 80. Your web application detects an HTTP connection, redirects the visitor back to HTTPS, and sends this request to Cloudflare. Cloudflare then reaches your app via HTTP again, starting an infinite redirect loop.
+* **The Step-by-Step Resolution:**
+  1. Set your Cloudflare **SSL/TLS Mode** to **Full** (or **Full Strict** if you decide to load self-signed cert blocks onto port 443 of the server later).
+  2. If using **Flexible SSL/TLS**, configure your application code (e.g. middlewares inside Express servers) to disable global force-redirection.
+  3. Instead of forcing redirects inside your web server, let Cloudflare manage the redirect logic at its edge network. To do this, navigate to the Cloudflare dashboard, go to **SSL/TLS** -> **Edge Certificates**, and toggle **Always Use HTTPS** to **ON**. This ensures all HTTP requests automatically upgrade to secure HTTPS before reaching your app server.
 
 ---
 
 ## Section 7: Running Checks & Diagnosis Playbook
 
-Once the CI/CD pipeline completes with a green checkmark, use these diagnostic playbooks to confirm everything is working properly:
+Once the CI/CD pipeline completes with a green checkmark, use these diagnostic commands to confirm the site's health:
 
-### Command 7.1: Check Service Health Status
-Connect to your EC2 instance and run:
+### 7.1 Check Running Container Status
+Connect to your EC2 Shell and run:
 ```bash
 docker compose ps
 ```
-Your container port status mapping should show `0.0.0.0:80->3000/tcp`. This confirms that all requests hitting Port 80 of your EC2 host are mapped directly to port 3000 inside the Docker container.
+*Your active node mappings should look like: `0.0.0.0:80->3000/tcp`. This confirms that host Port 80 traffic is routing directly to Port 3000 inside your Docker environment.*
 
-### Command 7.2: Monitor Live Output Logs
-Access stdout records from the live containers using standard logs:
+### 7.2 Read Container Engine Logs
 ```bash
 docker compose logs -f --tail=100
 ```
 
-### Command 7.3: Diagnose Local Port Bindings
-If the application refuses to resolve, run host tools to check if any other system process (such as a standalone installation of Nginx or Apache) is blocking port 80:
+### 7.3 Release Host Ports blockages
+If the container fails to launch due to port assignment issues, check which system process (such as standalone host installations of Apache or Nginx) is already using port 80:
 ```bash
 sudo lsof -i :80
 ```
-If a conflicting process is identified, stop it immediately to free up the HTTP port:
+Stop and disable those standalone processes to release Port 80 access:
 ```bash
 sudo systemctl stop nginx || sudo systemctl stop apache2
 sudo systemctl disable nginx || sudo systemctl disable apache2
 ```
+Now, re-trigger your container startup:
+```bash
+docker compose up -d
+```
 
 ---
 
-*This operations document is compiled with standard compliance paradigms. It is fully ready to be integrated into company asset directories or shared with prospective DevOps team members.*
+*This operations blueprint is fully finalized and ready for your DevOps team to manage, maintain, and automate your deployments.*

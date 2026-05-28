@@ -16,6 +16,9 @@ RUN npm run build
 # Stage 2: Production stage
 FROM node:20-alpine AS runner
 
+# Install curl binary for Backend Curl Engine execution
+RUN apk add --no-cache curl
+
 WORKDIR /app
 
 # Set production environment
