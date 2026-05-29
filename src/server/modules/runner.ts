@@ -22,6 +22,8 @@ export interface ProgressUpdate {
 }
 
 export class RequestRunner {
+  public static activeCount = 0;
+
   static async runBatch(
     config: BatchConfig, 
     onProgress?: (update: ProgressUpdate) => void,
@@ -39,11 +41,13 @@ export class RequestRunner {
     
     const runId = Math.random().toString(36).substring(7);
     const worker = async () => {
-      while (queue.length > 0 && !signal?.aborted) {
-        const index = queue.shift();
-        if (index === undefined) break;
+      RequestRunner.activeCount++;
+      try {
+        while (queue.length > 0 && !signal?.aborted) {
+          const index = queue.shift();
+          if (index === undefined) break;
 
-        let finalRequest = requests ? { ...requests[index] } : { ...request! };
+          let finalRequest = requests ? { ...requests[index] } : { ...request! };
 
         // --- Module-Specific Instrumentation ---
 
@@ -162,6 +166,9 @@ export class RequestRunner {
         if (delayMs > 0 && queue.length > 0 && !signal?.aborted) {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
+      }
+      } finally {
+        RequestRunner.activeCount--;
       }
     };
 

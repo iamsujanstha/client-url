@@ -25,7 +25,7 @@ export class CurlEngine {
   static buildCommand(config: RequestConfig): string[] {
     const isGraphql = config.method === 'GRAPHQL';
     const method = isGraphql ? 'POST' : config.method;
-    const args = ['-i', '-s', '-X', method];
+    const args = ['-i', '-s', '-L', '-X', method];
 
     // Default Headers (if not overridden)
     const finalHeaders: Record<string, string> = {
@@ -147,21 +147,44 @@ export class CurlEngine {
   }
 
   private static parseOutput(raw: string, id: string, responseTime: number, curlCommand: string): CurlResult {
-    const [headerPart, ...bodyParts] = raw.split(/\r?\n\r?\n/);
-    const body = bodyParts.join('\n\n');
+    const parts = raw.split(/\r?\n\r?\n/);
     
-    const lines = headerPart.split(/\r?\n/);
-    const statusLine = lines[0];
-    const statusMatch = statusLine.match(/HTTP\/\d(?:\.\d)?\s+(\d+)/);
-    const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
+    let status = 0;
     const headers: Record<string, string> = {};
-    lines.slice(1).forEach(line => {
-      const [key, ...valueParts] = line.split(':');
-      if (key && valueParts.length > 0) {
-        headers[key.trim().toLowerCase()] = valueParts.join(':').trim();
+    let bodyIndex = 0;
+    
+    // Scan parts to parse HTTP headers.
+    // A part is a header block if its first line starts with HTTP/ or if the block looks like headers.
+    while (bodyIndex < parts.length) {
+      const part = parts[bodyIndex];
+      const lines = part.split(/\r?\n/);
+      if (lines[0] && /^HTTP\/\d/i.test(lines[0].trim())) {
+        // This is a header block! Parse status and headers from it.
+        const statusLine = lines[0];
+        const statusMatch = statusLine.match(/HTTP\/\d(?:\.\d)?\s+(\d+)/i);
+        if (statusMatch) {
+          status = parseInt(statusMatch[1], 10);
+        }
+        
+        // Parse headers - clear headers of previous hops to only keep the final response headers
+        Object.keys(headers).forEach(key => delete headers[key]);
+        lines.slice(1).forEach(line => {
+          const colonIdx = line.indexOf(':');
+          if (colonIdx > 0) {
+            const key = line.substring(0, colonIdx).trim().toLowerCase();
+            const value = line.substring(colonIdx + 1).trim();
+            headers[key] = value;
+          }
+        });
+        
+        bodyIndex++;
+      } else {
+        // Found the start of the body block!
+        break;
       }
-    });
+    }
+    
+    const body = parts.slice(bodyIndex).join('\n\n');
 
     return {
       id,

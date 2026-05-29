@@ -16,6 +16,15 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Intercept and return clean JSON error for body parser syntax errors
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof SyntaxError && "status" in err && err.status === 400 && "body" in err) {
+      res.status(400).json({ error: "Malformed JSON payload in request body", message: err.message });
+      return;
+    }
+    next(err);
+  });
+
   // Mock Race Condition Demo State
   let globalBalance = 1000;
   let transactionLogs: any[] = [];
@@ -64,6 +73,17 @@ async function startServer() {
 
   app.get("/api/race-demo/balance", (req, res) => {
     res.json({ balance: globalBalance });
+  });
+
+  app.all(["/api/orders/broken/place", "/api/orders/fixed/place"], (req, res, next) => {
+    if (req.method !== "POST") {
+      res.status(405).json({
+        error: "Method Not Allowed",
+        message: `This endpoint only supports POST requests. You sent a ${req.method} request.`
+      });
+      return;
+    }
+    next();
   });
 
   app.post("/api/orders/broken/place", async (req, res) => {
@@ -119,8 +139,101 @@ async function startServer() {
   // WebSocket for real-time batch execution
   const activeBatches = new Map<WebSocket, AbortController>();
 
+  // Background simulated worker pool
+  interface SimulatedWorker {
+    id: string;
+    name: string;
+    status: "IDLE" | "ACTIVE";
+    task: string;
+    activeTime: number;
+  }
+
+  let spawnedBackgroundWorkers: SimulatedWorker[] = [
+    { id: "worker-1", name: "Thread_Alpha_414", status: "ACTIVE", task: "SYNCING_REDIS_CACHE", activeTime: 12 },
+    { id: "worker-2", name: "Thread_Beta_590", status: "IDLE", task: "WAITING_FOR_QUEUE", activeTime: 8 },
+    { id: "worker-3", name: "Thread_Gamma_821", status: "IDLE", task: "WAITING_FOR_QUEUE", activeTime: 4 }
+  ];
+
+  let maxWorkersLimit = 64;
+
+  const namesPool = [
+    "Thread_Delta", "Thread_Epsilon", "Thread_Zeta", "Thread_Eta", 
+    "Thread_Theta", "Thread_Iota", "Thread_Kappa", "Thread_Lambda", "Thread_Mu"
+  ];
+
+  // Worker task simulation loop
+  setInterval(() => {
+    spawnedBackgroundWorkers.forEach(w => {
+      w.activeTime += 1;
+      
+      // 25% chance to cycle states
+      if (Math.random() < 0.25) {
+        if (w.status === "IDLE") {
+          const tasks = [
+            "SYNCING_REDIS_CACHE", "DESERIALIZING_VARS", "PINGING_TEST_LAB",
+            "RECONCILING_HISTORY", "FUZZING_INPUT_VARS", "CLEANING_DEADLOCKS"
+          ];
+          w.status = "ACTIVE";
+          w.task = tasks[Math.floor(Math.random() * tasks.length)];
+        } else {
+          w.status = "IDLE";
+          w.task = "WAITING_FOR_QUEUE";
+        }
+      }
+    });
+  }, 1000);
+
+  // Real-time server telemetry engine (broadcast every 1000ms)
+  const broadcastTelemetry = () => {
+    const active = RequestRunner.activeCount + spawnedBackgroundWorkers.filter(w => w.status === "ACTIVE").length;
+    const clientCount = wss.clients.size;
+    
+    // Organic, realistic APM microsecond/millisecond jitter 
+    const redisLatency = Math.floor(Math.random() * 2) + 1; // 1-2 ms
+    const systemLatency = Math.floor(Math.random() * 4) + 8; // 8-12 ms
+    
+    const telemetryPayload = {
+      type: "telemetry",
+      payload: {
+        redisStatus: "CONNECTED",
+        redisLatency,
+        activeWorkers: active,
+        maxWorkers: maxWorkersLimit,
+        latency: `${systemLatency}ms`,
+        redisType: process.env.REDIS_URL ? "PRODUCTION" : "IN_MEMORY_CACHE",
+        clientCount,
+        spawnedWorkers: spawnedBackgroundWorkers
+      }
+    };
+    
+    const rawMessage = JSON.stringify(telemetryPayload);
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(rawMessage);
+      }
+    });
+  };
+
+  setInterval(broadcastTelemetry, 1000);
+
   wss.on("connection", (ws) => {
     console.log("New WS connection");
+
+    // Dispatch initial real-time telemetry frame immediately on connect
+    const initialPayload = {
+      type: "telemetry",
+      payload: {
+        redisStatus: "CONNECTED",
+        redisLatency: 2,
+        activeWorkers: RequestRunner.activeCount + spawnedBackgroundWorkers.filter(w => w.status === "ACTIVE").length,
+        maxWorkers: maxWorkersLimit,
+        latency: "10ms",
+        redisType: process.env.REDIS_URL ? "PRODUCTION" : "IN_MEMORY_CACHE",
+        clientCount: wss.clients.size,
+        spawnedWorkers: spawnedBackgroundWorkers
+      }
+    };
+    ws.send(JSON.stringify(initialPayload));
 
     ws.on("close", () => {
       const controller = activeBatches.get(ws);
@@ -134,7 +247,29 @@ async function startServer() {
       try {
         const data = JSON.parse(message.toString());
         
-        if (data.type === "run-batch") {
+        if (data.type === "spawn-worker") {
+          if (spawnedBackgroundWorkers.length < maxWorkersLimit) {
+            const nextName = namesPool[spawnedBackgroundWorkers.length % namesPool.length] || `Thread_Worker_${spawnedBackgroundWorkers.length + 1}`;
+            spawnedBackgroundWorkers.push({
+              id: `worker-${Math.random().toString(36).substring(7)}`,
+              name: `${nextName}_${Math.floor(Math.random() * 900) + 100}`,
+              status: "IDLE",
+              task: "WAITING_FOR_QUEUE",
+              activeTime: 0
+            });
+            broadcastTelemetry();
+          }
+        } else if (data.type === "terminate-worker") {
+          if (data.id) {
+            spawnedBackgroundWorkers = spawnedBackgroundWorkers.filter(w => w.id !== data.id);
+          } else {
+            spawnedBackgroundWorkers.pop();
+          }
+          broadcastTelemetry();
+        } else if (data.type === "set-max-workers") {
+          maxWorkersLimit = Math.max(1, Math.min(256, data.limit));
+          broadcastTelemetry();
+        } else if (data.type === "run-batch") {
           const config: BatchConfig = data.payload;
           const tabId = data.tabId;
           const controller = new AbortController();
@@ -175,6 +310,14 @@ async function startServer() {
     });
   });
 
+  // Master API 404 handler - placed BEFORE dev/production SPA routing
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ 
+      error: "Not Found", 
+      message: `API endpoint ${req.method} ${req.path} not found.` 
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -189,11 +332,6 @@ async function startServer() {
     // Serve SPA for non-API routes
     app.get(/^(?!\/api).*/, (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
-    });
-
-    // API 404 handler
-    app.all("/api/*", (req, res) => {
-      res.status(404).json({ error: `API endpoint ${req.method} ${req.url} not found` });
     });
   }
 

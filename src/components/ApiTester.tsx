@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Play, Plus, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight, Beaker, Activity, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Play, Plus, Minus, Cpu, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight, Beaker, Activity, RefreshCw, AlertTriangle, History, Sliders } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { v4 as uuidv4 } from 'uuid';
 import { RequestConfig, CurlResult } from '../server/modules/curl-engine';
 import { BatchConfig, ProgressUpdate } from '../server/modules/runner';
 import { TestLab, TestModuleId } from './TestLab';
+import { VariablesManager } from './VariablesManager';
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'GRAPHQL'];
 
@@ -38,7 +39,84 @@ interface Tab {
   progress: ProgressUpdate | null;
 }
 
-export function ApiTester({ variables = {} }: { variables?: Record<string, string> }) {
+function HistoryList() {
+  const [history, setHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('/api/history')
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP_${r.status}`);
+        return r.json();
+      })
+      .then(setHistory)
+      .catch(err => {
+        console.error('History fetch failed:', err);
+        setHistory([]);
+      });
+  }, []);
+
+  return (
+    <div className="flex-1 card-slate overflow-hidden flex flex-col bg-black border border-slate-850 rounded">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar min-h-[350px]">
+        {history.length === 0 && (
+          <div className="text-center p-12 text-slate-600 font-mono text-xs italic">
+            NO_PREVIOUS_REPORTS_FOUND_IN_CACHE
+          </div>
+        )}
+        {history.map((item, idx) => (
+          <div key={idx} className="p-3 bg-slate-900/40 border border-slate-850 rounded group hover:border-emerald-500/30 transition-all">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-3">
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                  item.batch ? 'border-amber-500/30 text-amber-500 bg-amber-500/5' : 'border-emerald-500/30 text-emerald-500 bg-emerald-500/5'
+                }`}>
+                  {item.batch ? 'CONCURRENCY_SET' : item.request.method}
+                </span>
+                <span className="text-[11px] font-mono text-slate-300 truncate max-w-[400px]">
+                  {item.request.url}
+                </span>
+              </div>
+              <span className="text-[10px] font-mono text-slate-600">
+                {new Date(item.timestamp).toLocaleTimeString([], { hour12: false })}
+              </span>
+            </div>
+            
+            {item.batch ? (
+              <div className="grid grid-cols-4 gap-2 mt-2 p-2 bg-black/40 rounded border border-slate-800/40">
+                <div className="text-center">
+                   <div className="text-[9px] text-slate-500 uppercase font-mono">REQ_CNT</div>
+                   <div className="text-[11px] font-bold font-mono text-white tracking-widest">{item.batch.iterations}</div>
+                </div>
+                <div className="text-center">
+                   <div className="text-[9px] text-slate-500 uppercase font-mono">PARAL_WK</div>
+                   <div className="text-[11px] font-bold font-mono text-amber-500">{item.batch.concurrency}</div>
+                </div>
+                <div className="text-center">
+                   <div className="text-[9px] text-slate-500 uppercase font-mono">OK_RESP</div>
+                   <div className="text-[11px] font-bold font-mono text-emerald-500">{item.batch.successCount}</div>
+                </div>
+                <div className="text-center">
+                   <div className="text-[9px] text-slate-500 uppercase font-mono">AVG_LAT</div>
+                   <div className="text-[11px] font-bold font-mono text-blue-400">{item.batch.avgResponseTime?.toFixed(0)}ms</div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-4 text-[10px] font-mono text-slate-500 pl-1">
+                <span className={item.result.status < 300 ? 'text-emerald-500' : 'text-rose-500'}>
+                  STATUS__{item.result.status}
+                </span>
+                <span className="opacity-50">|</span>
+                <span>TIME__{item.result.responseTime}MS</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ApiTester({ variables: initialVariables = {} }: { variables?: Record<string, string> }) {
   // Persistence Keys
   const TABS_KEY = 'curl_commander_tabs';
   const ACTIVE_TAB_KEY = 'curl_commander_active_tab';
@@ -106,12 +184,129 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
     return localStorage.getItem(SIDEBAR_KEY) === 'true';
   });
 
+  const [isWorkerPoolOpen, setIsWorkerPoolOpen] = useState(false);
+
+  // Custom terminal-styled modal state
+  const [dialog, setDialog] = useState<{
+    isOpen: boolean;
+    type: 'ALERT' | 'CONFIRM' | 'PROMPT_TEXT' | 'SAVE_REQUEST';
+    title: string;
+    message: string;
+    defaultValue?: string;
+    inputVal?: string;
+    selectedColId?: string;
+    onConfirm: (val1?: string, val2?: string) => void;
+  }>({
+    isOpen: false,
+    type: 'ALERT',
+    title: '',
+    message: '',
+    defaultValue: '',
+    inputVal: '',
+    selectedColId: '',
+    onConfirm: () => {}
+  });
+
+  const showCustomAlert = (title: string, message: string, onConfirm?: () => void) => {
+    setDialog({
+      isOpen: true,
+      type: 'ALERT',
+      title,
+      message,
+      defaultValue: '',
+      inputVal: '',
+      onConfirm: () => {
+        setDialog(prev => ({ ...prev, isOpen: false }));
+        if (onConfirm) onConfirm();
+      }
+    });
+  };
+
+  const showCustomConfirm = (title: string, message: string, onConfirm: () => void) => {
+    setDialog({
+      isOpen: true,
+      type: 'CONFIRM',
+      title,
+      message,
+      onConfirm: () => {
+        setDialog(prev => ({ ...prev, isOpen: false }));
+        onConfirm();
+      }
+    });
+  };
+
+  const showCustomPrompt = (title: string, message: string, defaultValue: string, onConfirm: (val: string) => void) => {
+    setDialog({
+      isOpen: true,
+      type: 'PROMPT_TEXT',
+      title,
+      message,
+      defaultValue,
+      inputVal: defaultValue,
+      onConfirm: (val) => {
+        setDialog(prev => ({ ...prev, isOpen: false }));
+        if (val) onConfirm(val);
+      }
+    });
+  };
+
+  const showSaveRequestDialog = (defaultRequestName: string, onConfirm: (reqName: string, colId: string) => void) => {
+    setDialog({
+      isOpen: true,
+      type: 'SAVE_REQUEST',
+      title: 'SAVE REQUEST TO COLLECTION',
+      message: 'Choose a descriptive identifier for your request and select a target collection.',
+      defaultValue: defaultRequestName,
+      inputVal: defaultRequestName,
+      selectedColId: collections[0]?.id || 'default',
+      onConfirm: (reqName, colId) => {
+        setDialog(prev => ({ ...prev, isOpen: false }));
+        if (reqName && colId) onConfirm(reqName, colId);
+      }
+    });
+  };
+
+  const [telemetry, setTelemetry] = useState(() => {
+    return {
+      redisStatus: 'CONNECTED',
+      redisLatency: 2,
+      activeWorkers: 0,
+      maxWorkers: 64,
+      latency: '10ms',
+      redisType: 'IN_MEMORY_CACHE',
+      clientCount: 1,
+      spawnedWorkers: [] as { id: string; name: string; status: 'IDLE' | 'ACTIVE'; task: string; activeTime: number; }[]
+    };
+  });
+
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
-  const [view, setView] = useState<'debugger' | 'lab'>('debugger');
+  const [view, setView] = useState<'debugger' | 'lab' | 'variables' | 'history'>('debugger');
+
+  const [variables, setVariables] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('curl_commander_variables');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      'BASE_URL': 'http://localhost:3000',
+      'TOKEN': 'sk_test_5123456789',
+      ...initialVariables
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('curl_commander_variables', JSON.stringify(variables));
+  }, [variables]);
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
   
+  // Track activeTabId in ref to avoid re-initializing WS on every tab transition
+  const activeTabIdRef = React.useRef(activeTabId);
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
   if (!activeTab) return null;
 
   // Sync Persistence
@@ -129,7 +324,7 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'progress') {
-          const tabId = data.tabId || activeTabId;
+          const tabId = data.tabId || activeTabIdRef.current;
           setTabs(prev => prev.map(t => {
             if (t.id === tabId) {
               return {
@@ -141,8 +336,10 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
             return t;
           }));
         } else if (data.type === 'complete') {
-          const tabId = data.tabId || activeTabId;
+          const tabId = data.tabId || activeTabIdRef.current;
           setTabs(prev => prev.map(t => t.id === tabId ? { ...t, progress: null, loading: false } : t));
+        } else if (data.type === 'telemetry') {
+          setTelemetry(data.payload);
         }
       } catch (e) {
         console.error('WS Message parsing error:', e);
@@ -151,7 +348,7 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
     setWs(socket);
     return () => socket.close();
-  }, [activeTabId]);
+  }, []);
 
   const updateActiveTab = (updates: Partial<Tab>) => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, ...updates } : t));
@@ -169,7 +366,7 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
     let resolved = text;
     Object.entries(variables).forEach(([key, value]) => {
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      resolved = resolved.replace(new RegExp(`\\{\\{${escapedKey}\\}\\}`, 'g'), value);
+      resolved = resolved.replace(new RegExp(`\\{\\{${escapedKey}\\}\\}`, 'g'), value as string);
     });
     return resolved;
   };
@@ -364,9 +561,9 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
   };
 
   const addCollection = () => {
-    const name = prompt('ENTER_COLLECTION_NAME:');
-    if (!name) return;
-    setCollections(prev => [...prev, { id: uuidv4(), name: name.toUpperCase(), requests: [] }]);
+    showCustomPrompt('CREATE COLLECTION', 'Enter a name for the new collection:', 'NEW_COLLECTION', (name) => {
+      setCollections(prev => [...prev, { id: uuidv4(), name: name.toUpperCase(), requests: [] }]);
+    });
   };
 
   const deleteRequest = (colId: string, reqId: string) => {
@@ -377,37 +574,35 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
   const deleteCollection = (id: string) => {
     if (id === 'default') {
-      alert('CANNOT_DELETE_ROOT_COLLECTION');
+      showCustomAlert('ACTION DENIED', 'The Root Collection is system-reserved and cannot be deleted.');
       return;
     }
-    if (confirm('DELETE_COLLECTION_AND_ALL_REQUESTS?')) {
-      setCollections(prev => prev.filter(c => c.id !== id));
-    }
+    showCustomConfirm(
+      'DELETE COLLECTION',
+      'Warning: This action will permanently delete this collection and all of its compiled requests. Are you sure you want to proceed?',
+      () => {
+        setCollections(prev => prev.filter(c => c.id !== id));
+      }
+    );
   };
 
   const saveToCollection = () => {
-    const name = prompt('ENTER_REQUEST_IDENTIFIER:', activeTab.name);
-    if (!name) return;
+    showSaveRequestDialog(activeTab.name, (name, colId) => {
+      const targetCol = collections.find(c => c.id === colId) || collections[0];
+      if (!targetCol) return;
 
-    // Simplistic collection selector for now
-    const collectionList = collections.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
-    const choice = prompt(`SELECT_COLLECTION (ENTER NUMBER):\n${collectionList}`, '1');
-    const index = parseInt(choice || '1') - 1;
-    const targetCol = collections[index] || collections[0];
-    
-    if (!targetCol) return;
+      const savedReq: SavedRequest = {
+        id: uuidv4(),
+        name,
+        ...activeTab.config,
+        graphqlQuery: activeTab.graphqlQuery,
+        graphqlVariables: activeTab.graphqlVariables,
+        headersList: [...activeTab.headersList]
+      };
 
-    const savedReq: SavedRequest = {
-      id: uuidv4(),
-      name,
-      ...activeTab.config,
-      graphqlQuery: activeTab.graphqlQuery,
-      graphqlVariables: activeTab.graphqlVariables,
-      headersList: [...activeTab.headersList]
-    };
-
-    setCollections(prev => prev.map(c => c.id === targetCol.id ? { ...c, requests: [...c.requests, savedReq] } : c));
-    updateActiveTab({ name });
+      setCollections(prev => prev.map(c => c.id === targetCol.id ? { ...c, requests: [...c.requests, savedReq] } : c));
+      updateActiveTab({ name });
+    });
   };
 
   const handleStartLabTest = (moduleId: TestModuleId, settings: any) => {
@@ -439,7 +634,7 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
         <div className="h-12 flex items-center justify-between px-3 border-b border-slate-800 shrink-0">
           {!isSidebarCollapsed && (
             <span className="text-[10px] font-black tracking-[0.4em] text-white uppercase flex items-center gap-2">
-              <Terminal size={14} className="text-emerald-500" /> CMD_CORE
+              <Terminal size={14} className="text-emerald-500" /> HYPERCURL
             </span>
           )}
           <button 
@@ -457,22 +652,66 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
               <button 
                 onClick={() => setView('debugger')}
                 className={cn(
-                  "w-full flex items-center gap-3 px-2 py-2 rounded text-[10px] font-medium uppercase tracking-widest transition-all",
-                  view === 'debugger' ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
+                  "w-full flex items-center gap-3 px-3 py-2 rounded text-[11px] font-mono transition-all group",
+                  view === 'debugger' 
+                    ? "bg-slate-800/50 text-emerald-400 border-l-2 border-emerald-500 font-bold" 
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                 )}
                 title={isSidebarCollapsed ? "API Debugger" : ""}
               >
-                <Terminal size={16} /> {!isSidebarCollapsed && "Debugger"}
+                <Terminal size={15} className={cn(
+                  "transition-transform",
+                  view === 'debugger' ? "text-emerald-500" : "group-hover:scale-110"
+                )} />
+                {!isSidebarCollapsed && <span className="uppercase tracking-tight">DEBUGGER</span>}
               </button>
               <button 
                 onClick={() => setView('lab')}
                 className={cn(
-                  "w-full flex items-center gap-3 px-2 py-2 rounded text-[10px] font-medium uppercase tracking-widest transition-all",
-                  view === 'lab' ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300 hover:bg-white/5"
+                  "w-full flex items-center gap-3 px-3 py-2 rounded text-[11px] font-mono transition-all group",
+                  view === 'lab' 
+                    ? "bg-slate-800/50 text-emerald-400 border-l-2 border-emerald-500 font-bold" 
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                 )}
                 title={isSidebarCollapsed ? "Test Lab" : ""}
               >
-                <Beaker size={16} /> {!isSidebarCollapsed && "Test Lab"}
+                <Beaker size={15} className={cn(
+                  "transition-transform",
+                  view === 'lab' ? "text-emerald-500" : "group-hover:scale-110"
+                )} />
+                {!isSidebarCollapsed && <span className="uppercase tracking-tight">TEST LAB</span>}
+              </button>
+              <button 
+                onClick={() => setView('variables')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-3 py-2 rounded text-[11px] font-mono transition-all group",
+                  view === 'variables' 
+                    ? "bg-slate-800/50 text-emerald-400 border-l-2 border-emerald-500 font-bold" 
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                )}
+                title={isSidebarCollapsed ? "Environments" : ""}
+              >
+                <Sliders size={15} className={cn(
+                  "transition-transform",
+                  view === 'variables' ? "text-emerald-500" : "group-hover:scale-110"
+                )} />
+                {!isSidebarCollapsed && <span className="uppercase tracking-tight">ENVIRONMENTS</span>}
+              </button>
+              <button 
+                onClick={() => setView('history')}
+                className={cn(
+                  "w-full flex items-center gap-3 px-3 py-2 rounded text-[11px] font-mono transition-all group",
+                  view === 'history' 
+                    ? "bg-slate-800/50 text-emerald-400 border-l-2 border-emerald-500 font-bold" 
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                )}
+                title={isSidebarCollapsed ? "History Logs" : ""}
+              >
+                <History size={15} className={cn(
+                  "transition-transform",
+                  view === 'history' ? "text-emerald-500" : "group-hover:scale-110"
+                )} />
+                {!isSidebarCollapsed && <span className="uppercase tracking-tight">HISTORY</span>}
               </button>
             </div>
 
@@ -568,319 +807,657 @@ export function ApiTester({ variables = {} }: { variables?: Record<string, strin
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 bg-[#0B0D11] relative">
-        {/* Tab System */}
-        <div className="h-10 flex border-b border-slate-800 bg-[#0F1115] shrink-0 overflow-x-auto no-scrollbar">
-          {tabs.map(tab => (
+        <nav className="flex items-center justify-between px-4 h-12 border-b border-[#1E293B] bg-[#0F1115] shrink-0">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 bg-emerald-500 rounded flex items-center justify-center text-black font-bold text-xs font-mono">C</div>
+              <span className="font-mono font-bold tracking-tighter text-sm uppercase">Curler_Pro</span>
+            </div>
+            <div className="flex items-center gap-1 text-[11px] font-mono text-slate-500">
+              <span className="text-emerald-500 font-bold">PROJECTS</span>
+              <span className="opacity-40">/</span>
+              <span>TELEMETRY_ENGINE</span>
+              <span className="opacity-40">/</span>
+              <span className="text-slate-200 font-bold">{view.toUpperCase()}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 px-2 py-1 bg-slate-900/40 rounded border border-slate-800" title={`Redis Type: ${telemetry.redisType}`}>
+              <span className={cn(
+                "w-1.5 h-1.5 rounded-full animate-pulse",
+                telemetry.redisStatus === 'CONNECTED' ? "bg-emerald-500" : "bg-rose-500"
+              )}></span>
+              <span className="text-[10px] font-mono text-slate-400">
+                REDIS: {telemetry.redisStatus === 'CONNECTED' ? `CONNECTED (${telemetry.redisLatency}ms)` : 'DISCONNECTED'}
+              </span>
+            </div>
             <div 
-              key={tab.id}
-              onClick={() => setActiveTabId(tab.id)}
+              onClick={() => setIsWorkerPoolOpen(!isWorkerPoolOpen)}
               className={cn(
-                "group flex items-center gap-3 px-4 min-w-[120px] max-w-[180px] border-r border-slate-800 cursor-pointer transition-all relative select-none",
-                tab.id === activeTabId ? "bg-black" : "hover:bg-white/5"
+                "flex items-center gap-2 px-2 py-1 rounded border cursor-pointer select-none transition-all active:scale-95",
+                isWorkerPoolOpen 
+                  ? "bg-emerald-950/40 border-emerald-500/50 hover:bg-emerald-950/60" 
+                  : "bg-slate-900/40 border-slate-800 hover:bg-slate-800 hover:border-slate-700"
               )}
+              title="Click to manage and spawn background worker threads"
             >
               <span className={cn(
-                "text-[10px] font-mono truncate uppercase flex-1 tracking-tight",
-                tab.id === activeTabId ? "text-white font-bold" : "text-slate-600"
-              )}>
-                {tab.name}
+                "w-1.5 h-1.5 rounded-full",
+                telemetry.activeWorkers > 0 ? "bg-amber-500 animate-pulse" : "bg-slate-500"
+              )}></span>
+              <span className="text-[10px] font-mono text-slate-400 uppercase flex items-center gap-1">
+                Workers: {telemetry.activeWorkers} Active <ChevronDown size={10} className={cn("transition-transform duration-200", isWorkerPoolOpen && "rotate-180")} />
               </span>
-              <button 
-                onClick={(e) => closeTab(e, tab.id)}
-                className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-white/5 rounded text-slate-600 hover:text-rose-500 transition-all"
-              >
-                <X size={10} />
-              </button>
             </div>
-          ))}
-          <button 
-            onClick={() => createTab()}
-            className="flex items-center justify-center px-4 border-r border-slate-800 hover:bg-white/5 text-slate-700 transition-colors"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
+          </div>
+        </nav>
+
+        {/* Worker Pool Popover */}
+        <AnimatePresence>
+          {isWorkerPoolOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.95 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="absolute right-4 top-13 w-80 bg-[#12161E] border border-slate-800 rounded-lg shadow-2xl z-50 overflow-hidden font-mono"
+            >
+              <div className="p-3 border-b border-slate-800 bg-[#161B25] flex justify-between items-center">
+                <span className="text-[9px] font-black text-white tracking-widest uppercase flex items-center gap-2">
+                  <Cpu size={12} className="text-emerald-500" /> WORKER_THREAD_POOL
+                </span>
+                <button 
+                  onClick={() => setIsWorkerPoolOpen(false)}
+                  className="text-slate-500 hover:text-white transition-colors"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+
+              <div className="p-4 space-y-4">
+                {/* Control Actions */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => ws?.send(JSON.stringify({ type: 'spawn-worker' }))}
+                    className="flex-1 py-1.5 bg-emerald-600/25 hover:bg-emerald-600 border border-emerald-500/30 hover:border-emerald-500 text-emerald-400 hover:text-white text-[9px] font-black rounded transition-all uppercase flex items-center justify-center gap-1 shadow-sm h-7"
+                  >
+                    <Plus size={10} /> Spawn Worker
+                  </button>
+                  <button
+                    onClick={() => ws?.send(JSON.stringify({ type: 'terminate-worker' }))}
+                    className="flex-1 py-1.5 bg-rose-600/25 hover:bg-rose-600 border border-rose-500/30 hover:border-rose-500 text-rose-400 hover:text-white text-[9px] font-black rounded transition-all uppercase flex items-center justify-center gap-1 shadow-sm h-7"
+                    disabled={(!telemetry.spawnedWorkers || telemetry.spawnedWorkers.length === 0)}
+                  >
+                    <Minus size={10} /> Kill Last
+                  </button>
+                </div>
+
+                {/* Capacity Adjuster */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[8px] text-slate-500 uppercase">
+                    <span>Pool max capacity</span>
+                    <span className="text-white font-bold">{telemetry.maxWorkers} THREADS</span>
+                  </div>
+                  <input 
+                    type="range"
+                    min="10"
+                    max="128"
+                    step="5"
+                    value={telemetry.maxWorkers}
+                    onChange={(e) => ws?.send(JSON.stringify({ type: 'set-max-workers', limit: parseInt(e.target.value) }))}
+                    className="w-full accent-emerald-500 bg-slate-800 h-1 rounded outline-none cursor-ew-resize border-none"
+                  />
+                </div>
+
+                {/* Thread pool stats banner */}
+                <div className="text-[8px] bg-slate-900/50 p-2 rounded border border-slate-800/40 flex justify-between text-slate-400">
+                  <span>THREADS: {telemetry.activeWorkers}/{telemetry.maxWorkers}</span>
+                  <span>CLIENTS: {telemetry.clientCount}</span>
+                </div>
+
+                {/* Active Worker Grid List */}
+                <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                  {!telemetry.spawnedWorkers || telemetry.spawnedWorkers.length === 0 ? (
+                    <div className="p-4 text-center border border-dashed border-slate-805 rounded text-slate-600 text-[9px] uppercase">
+                      No background active threads.
+                    </div>
+                  ) : (
+                    telemetry.spawnedWorkers.map((worker) => (
+                      <div 
+                        key={worker.id}
+                        className="p-2 bg-slate-900/40 border border-slate-800/60 rounded flex items-center justify-between text-[9px]"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Cpu size={12} className={cn(
+                            worker.status === 'ACTIVE' ? "text-amber-500 animate-pulse" : "text-slate-600"
+                          )} />
+                          <div className="min-w-0">
+                            <div className="text-slate-300 font-bold truncate tracking-tight">{worker.name}</div>
+                            <div className="text-[7.5px] text-slate-500 truncate flex items-center gap-1 uppercase tracking-tight">
+                              <span className={cn(
+                                "w-1 h-1 rounded-full",
+                                worker.status === 'ACTIVE' ? "bg-amber-400 animate-pulse" : "bg-slate-500"
+                              )}></span>
+                              <span>{worker.task}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+                          <span className="text-[8px] text-slate-600 font-black">{worker.activeTime}s</span>
+                          <button
+                            onClick={() => ws?.send(JSON.stringify({ type: 'terminate-worker', id: worker.id }))}
+                            className="p-0.5 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/50 rounded text-slate-600 hover:text-rose-500 transition-all"
+                            title="Kill Thread"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Tab System */}
+        {(view === 'debugger' || view === 'lab') && (
+          <div className="h-10 flex border-b border-slate-800 bg-[#0F1115] shrink-0 overflow-x-auto no-scrollbar">
+            {tabs.map(tab => (
+              <div 
+                key={tab.id}
+                onClick={() => setActiveTabId(tab.id)}
+                className={cn(
+                  "group flex items-center gap-3 px-4 min-w-[120px] max-w-[180px] border-r border-slate-800 cursor-pointer transition-all relative select-none",
+                  tab.id === activeTabId ? "bg-black" : "hover:bg-white/5"
+                )}
+              >
+                <span className={cn(
+                  "text-[10px] font-mono truncate uppercase flex-1 tracking-tight",
+                  tab.id === activeTabId ? "text-white font-bold" : "text-slate-600"
+                )}>
+                  {tab.name}
+                </span>
+                <button 
+                  onClick={(e) => closeTab(e, tab.id)}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-white/5 rounded text-slate-600 hover:text-rose-500 transition-all"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+            <button 
+              onClick={() => createTab()}
+              className="flex items-center justify-center px-4 border-r border-slate-800 hover:bg-white/5 text-slate-700 transition-colors"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Workspace Panels */}
-        {view === 'debugger' ? (
-          <div className="flex-1 flex flex-col lg:flex-row gap-0 overflow-hidden">
-            {/* Active Tab Panel */}
-            <div className="w-full lg:w-1/2 border-r border-slate-800 flex flex-col bg-[#0B0D11]">
-            <div className="p-4 border-b border-slate-800 flex flex-col gap-4 shrink-0">
-              <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-                {[
-                  { name: 'Reset', url: 'http://localhost:3000/api/race-demo/reset', method: 'POST' },
-                  { name: 'Broken_Buy', url: 'http://localhost:3000/api/orders/broken/place', method: 'POST' },
-                  { name: 'Fixed_Buy', url: 'http://localhost:3000/api/orders/fixed/place', method: 'POST' }
-                ].map(ep => (
-                  <button 
-                    key={ep.name}
-                    onClick={() => updateActiveConfig({ url: ep.url, method: ep.method as any })}
-                    className="text-[9px] font-mono bg-slate-900/50 border border-slate-800 px-2 py-0.5 rounded text-slate-500 hover:text-emerald-500 hover:border-emerald-500/30 transition-all uppercase whitespace-nowrap"
-                  >
-                    {ep.name}
-                  </button>
-                ))}
-              </div>
-              
-              <div className="flex gap-0 ring-1 ring-slate-800 rounded bg-[#0F1115] overflow-hidden focus-within:ring-emerald-500/50 transition-all">
-                <select
-                  value={activeTab.config.method}
-                  onChange={(e) => updateActiveConfig({ method: e.target.value as any })}
-                  className="bg-transparent text-amber-500 font-black text-[11px] px-4 outline-none cursor-pointer border-r border-slate-800 h-10 appearance-none text-center"
-                >
-                  {METHODS.map(m => <option key={m} value={m} className="bg-slate-900 border-none">{m}</option>)}
-                </select>
-                <input
-                  type="text"
-                  value={activeTab.config.url}
-                  onChange={(e) => updateActiveConfig({ url: e.target.value })}
-                  placeholder="URL_ENDPOINT_INPUT"
-                  className="flex-1 bg-transparent px-4 text-[11px] font-mono text-emerald-400 placeholder:text-slate-700 outline-none h-10"
-                />
-                <button
-                  onClick={activeTab.loading ? handleAbort : handleRun}
-                  className={cn(
-                    "px-6 text-[10px] font-black transition-all text-white active:scale-95 h-10 flex items-center justify-center gap-2 border-l border-slate-800",
-                    activeTab.loading ? "bg-rose-600/80 hover:bg-rose-600" : "bg-emerald-600/80 hover:bg-emerald-600"
-                  )}
-                >
-                  {activeTab.loading ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
-                  {activeTab.loading ? 'ABORT' : 'EXEC'}
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={saveToCollection}
-                    className="p-1 px-2 border border-slate-800 rounded text-[9px] font-mono text-slate-500 hover:text-white flex items-center gap-1.5 uppercase transition-colors"
-                  >
-                    <Save size={10} /> SAVE
-                  </button>
-                  <div className="h-4 w-px bg-slate-800 mx-1"></div>
-                  {['Single', 'Batch'].map(mode => (
-                    <button
-                      key={mode}
-                      onClick={() => updateActiveTab({ batchMode: mode === 'Batch' })}
-                      className={cn(
-                        "px-2 py-0.5 rounded text-[9px] font-mono border transition-all uppercase",
-                        (mode === 'Batch' && activeTab.batchMode) || (mode === 'Single' && !activeTab.batchMode)
-                          ? "bg-white text-black border-white"
-                          : "bg-transparent border-slate-800 text-slate-500"
-                      )}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-                <button 
-                  onClick={() => updateActiveTab({ showCurl: !activeTab.showCurl })}
-                  className={cn(
-                    "text-[9px] font-mono flex items-center gap-1 uppercase tracking-widest transition-colors",
-                    activeTab.showCurl ? "text-emerald-400" : "text-slate-600 hover:text-slate-400"
-                  )}
-                >
-                  <Terminal size={10} /> {activeTab.showCurl ? 'HIDE_CURL' : 'SHOW_CURL'}
-                </button>
-                <div className="h-4 w-px bg-slate-800 mx-1"></div>
-                <button 
-                  onClick={() => {
-                    const resolved = getResolvedConfig(activeTab);
-                    const curl = `curl -X ${resolved.method} "${resolved.url}" ${Object.entries(resolved.headers).map(([k,v]) => `-H "${k}: ${v}"`).join(' ')} ${resolved.body ? `-d '${resolved.body}'` : ''}`;
-                    navigator.clipboard.writeText(curl);
-                  }}
-                  className="text-[9px] font-mono text-slate-600 hover:text-emerald-400 flex items-center gap-1 uppercase tracking-widest"
-                >
-                  <Copy size={10} /> COPY_CURL
-                </button>
-              </div>
-
-              {activeTab.showCurl && (
-                <div className="mt-4 p-4 bg-black border border-emerald-500/20 rounded font-mono space-y-3 relative group overflow-hidden shadow-2xl">
-                  <div className="absolute top-0 left-0 w-[2px] h-full bg-emerald-500"></div>
-                  <div className="flex items-center justify-between opacity-50 group-hover:opacity-100 transition-opacity">
-                    <span className="text-emerald-500 font-bold text-[9px] tracking-[0.2em]">CURL_ORCHESTRATION_PREVIEW</span>
-                    <span className="text-slate-700 text-[9px] font-black">{activeTab.batchMode ? 'CONCURRENT_BATCH' : 'SINGLE_THREAD'}</span>
-                  </div>
-                  <pre className="text-emerald-400 text-xs whitespace-pre-wrap break-all leading-relaxed max-h-60 overflow-y-auto no-scrollbar selection:bg-emerald-500/30">
-                    {(() => {
-                      const resolved = getResolvedConfig(activeTab);
-                      const isGraphql = resolved.method === 'GRAPHQL';
-                      const method = isGraphql ? 'POST' : resolved.method;
-                      const finalHeaders = { ...resolved.headers };
-                      if (isGraphql && !finalHeaders['Content-Type']) {
-                        finalHeaders['Content-Type'] = 'application/json';
-                      }
-                      
-                      const headerString = Object.entries(finalHeaders)
-                        .map(([k,v]) => `-H "${k}: ${v}"`)
-                        .join(' ');
-                        
-                      const baseCurl = `curl -X ${method} "${resolved.url}" ${headerString} ${resolved.body ? `-d '${resolved.body.replace(/'/g, "'\\''")}'` : ''}`;
-                      
-                      if (activeTab.batchMode) {
-                        return `# CONCURRENT_BATCH_MODE (10 REQS / 5 THREADS)\nseq 10 | xargs -I {} -P 5 ${baseCurl}`;
-                      }
-                      return baseCurl;
-                    })()}
-                  </pre>
-                </div>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-               {/* Parameters and Body implementation from original ApiTester */}
-               <section className="mb-6">
-                <div className="flex items-center justify-between mb-3">
-                  <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
-                     <List size={10} /> Headers_Matrix
-                  </label>
-                  <button 
-                    onClick={() => updateActiveTab({ headersList: [...activeTab.headersList, { id: uuidv4(), key: '', value: '' }] })}
-                    className="text-emerald-500"
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-                <div className="space-y-1.5">
-                  {activeTab.headersList.map((h) => (
-                    <div key={h.id} className="flex gap-1 group">
-                      <input
-                        value={h.key}
-                        onChange={(e) => {
-                          const newList = activeTab.headersList.map(item => item.id === h.id ? { ...item, key: e.target.value } : item);
-                          updateActiveTab({ headersList: newList });
-                        }}
-                        placeholder="Key"
-                        className="flex-1 bg-slate-900 border border-slate-800/80 rounded px-2 py-1.5 text-[11px] font-mono outline-none"
-                      />
-                      <input
-                        value={h.value}
-                        onChange={(e) => {
-                          const newList = activeTab.headersList.map(item => item.id === h.id ? { ...item, value: e.target.value } : item);
-                          updateActiveTab({ headersList: newList });
-                        }}
-                        placeholder="Value"
-                        className="flex-1 bg-slate-900 border border-slate-800/80 rounded px-2 py-1.5 text-[11px] font-mono outline-none"
-                      />
-                      <button 
-                        onClick={() => {
-                          const newList = activeTab.headersList.filter(item => item.id !== h.id);
-                          updateActiveTab({ headersList: newList });
-                        }}
-                        className="text-slate-600 hover:text-rose-500 group-hover:opacity-100 transition-opacity"
+        <div className="flex-1 overflow-hidden relative">
+          <AnimatePresence mode="wait">
+            {view === 'debugger' && (
+              <motion.div 
+                key="debugger"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                transition={{ duration: 0.15 }}
+                className="absolute inset-0 flex flex-col lg:flex-row gap-0 overflow-hidden"
+              >
+                {/* Active Tab Panel */}
+                <div className="w-full lg:w-1/2 border-r border-slate-800 flex flex-col bg-[#0B0D11] overflow-y-auto no-scrollbar">
+                  <div className="p-4 border-b border-slate-800 flex flex-col gap-4 shrink-0">
+                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                      {[
+                        { name: 'Reset', url: 'http://localhost:3000/api/race-demo/reset', method: 'POST' },
+                        { name: 'Broken_Buy', url: 'http://localhost:3000/api/orders/broken/place', method: 'POST' },
+                        { name: 'Fixed_Buy', url: 'http://localhost:3000/api/orders/fixed/place', method: 'POST' }
+                      ].map(ep => (
+                        <button 
+                          key={ep.name}
+                          onClick={() => updateActiveConfig({ url: ep.url, method: ep.method as any })}
+                          className="text-[9px] font-mono bg-slate-900/50 border border-slate-800 px-2 py-0.5 rounded text-slate-500 hover:text-emerald-500 hover:border-emerald-500/30 transition-all uppercase whitespace-nowrap"
+                        >
+                          {ep.name}
+                        </button>
+                      ))}
+                    </div>
+                    
+                    <div className="flex gap-0 ring-1 ring-slate-800 rounded bg-[#0F1115] overflow-hidden focus-within:ring-emerald-500/50 transition-all">
+                      <select
+                        value={activeTab.config.method}
+                        onChange={(e) => updateActiveConfig({ method: e.target.value as any })}
+                        className="bg-transparent text-amber-500 font-bold font-mono text-[11px] px-4 outline-none cursor-pointer border-r border-slate-800 h-10 appearance-none text-center"
                       >
-                        <Trash2 size={12} />
+                        {METHODS.map(m => <option key={m} value={m} className="bg-slate-900 border-none">{m}</option>)}
+                      </select>
+                      <input
+                        type="text"
+                        value={activeTab.config.url}
+                        onChange={(e) => updateActiveConfig({ url: e.target.value })}
+                        placeholder="URL_ENDPOINT_INPUT"
+                        className="flex-1 bg-transparent px-4 text-[11px] font-mono text-emerald-400 placeholder:text-slate-700 outline-none h-10"
+                      />
+                      <button
+                        onClick={activeTab.loading ? handleAbort : handleRun}
+                        className={cn(
+                          "px-6 text-[10px] font-mono font-bold transition-all text-white active:scale-95 h-10 flex items-center justify-center gap-2 border-l border-slate-800",
+                          activeTab.loading ? "bg-rose-600/85 hover:bg-rose-600" : "bg-emerald-600/85 hover:bg-emerald-600"
+                        )}
+                      >
+                        {activeTab.loading ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} fill="currentColor" />}
+                        {activeTab.loading ? 'ABORT' : 'EXEC'}
                       </button>
                     </div>
-                  ))}
-                </div>
-               </section>
 
-               {['POST', 'PUT', 'PATCH'].includes(activeTab.config.method) && (
-                <section>
-                  <div className="flex items-center justify-between mb-3">
-                    <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
-                       <FileJson size={10} /> Payload_JSON
-                    </label>
-                    <button 
-                      onClick={() => {
-                        try {
-                          const obj = JSON.parse(activeTab.config.body || '');
-                          updateActiveConfig({ body: JSON.stringify(obj, null, 2) });
-                        } catch (e) {
-                          alert('Invalid JSON');
-                        }
-                      }}
-                      className="text-[9px] font-mono text-slate-600 hover:text-emerald-500 uppercase transition-colors"
-                    >
-                      Prettify_JSON
-                    </button>
-                  </div>
-                  <textarea
-                    value={activeTab.config.body}
-                    onChange={(e) => updateActiveConfig({ body: e.target.value })}
-                    className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-emerald-400/80 outline-none h-40 resize-none"
-                  />
-                </section>
-               )}
-
-               {activeTab.config.method === 'GRAPHQL' && (
-                <section className="space-y-6">
-                  <div>
-                    <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-3 flex items-center gap-2">
-                       <Layers size={10} className="text-violet-500" /> GraphQL_Query
-                    </label>
-                    <textarea
-                      value={activeTab.graphqlQuery || ''}
-                      onChange={(e) => updateActiveTab({ graphqlQuery: e.target.value })}
-                      placeholder="query MyQuery { ... }"
-                      className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-violet-400/80 outline-none h-48 resize-none shadow-inner"
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
-                         <Database size={10} className="text-blue-500" /> Variables_JSON
-                      </label>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={saveToCollection}
+                          className="p-1 px-2 border border-slate-800 rounded text-[9px] font-mono text-slate-500 hover:text-white flex items-center gap-1.5 uppercase transition-colors"
+                        >
+                          <Save size={10} /> SAVE
+                        </button>
+                        <div className="h-4 w-px bg-slate-800 mx-1"></div>
+                        {['Single', 'Batch'].map(mode => (
+                          <button
+                            key={mode}
+                            onClick={() => updateActiveTab({ batchMode: mode === 'Batch' })}
+                            className={cn(
+                              "px-2 py-0.5 rounded text-[9px] font-mono border transition-all uppercase",
+                              (mode === 'Batch' && activeTab.batchMode) || (mode === 'Single' && !activeTab.batchMode)
+                                ? "bg-white text-black border-white"
+                                : "bg-transparent border-slate-800 text-slate-500"
+                            )}
+                          >
+                            {mode}
+                          </button>
+                        ))}
+                      </div>
+                      <button 
+                        onClick={() => updateActiveTab({ showCurl: !activeTab.showCurl })}
+                        className={cn(
+                          "text-[9px] font-mono flex items-center gap-1 uppercase tracking-widest transition-colors",
+                          activeTab.showCurl ? "text-emerald-400" : "text-slate-600 hover:text-slate-400"
+                        )}
+                      >
+                        <Terminal size={10} /> {activeTab.showCurl ? 'HIDE_CURL' : 'SHOW_CURL'}
+                      </button>
+                      <div className="h-4 w-px bg-slate-800 mx-1"></div>
                       <button 
                         onClick={() => {
-                          try {
-                            const obj = JSON.parse(activeTab.graphqlVariables || '{}');
-                            updateActiveTab({ graphqlVariables: JSON.stringify(obj, null, 2) });
-                          } catch (e) {
-                            alert('Invalid JSON');
-                          }
+                          const resolved = getResolvedConfig(activeTab);
+                          const curl = `curl -X ${resolved.method} "${resolved.url}" ${Object.entries(resolved.headers).map(([k,v]) => `-H "${k}: ${v}"`).join(' ')} ${resolved.body ? `-d '${resolved.body}'` : ''}`;
+                          navigator.clipboard.writeText(curl);
                         }}
-                        className="text-[9px] font-mono text-slate-600 hover:text-blue-400 uppercase transition-colors"
+                        className="text-[9px] font-mono text-slate-600 hover:text-emerald-400 flex items-center gap-1 uppercase tracking-widest"
                       >
-                        Format_Vars
+                        <Copy size={10} /> COPY_CURL
                       </button>
                     </div>
-                    <textarea
-                      value={activeTab.graphqlVariables || ''}
-                      onChange={(e) => updateActiveTab({ graphqlVariables: e.target.value })}
-                      placeholder='{ "id": 1 }'
-                      className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-blue-400/80 outline-none h-24 resize-none"
-                    />
-                  </div>
-                </section>
-               )}
-            </div>
-          </div>
 
-          <div className="w-full lg:w-1/2 flex flex-col bg-black overflow-hidden">
-            {activeTab.batchMode ? (
-              <BatchViewer 
-                results={activeTab.batchResults} 
-                progress={activeTab.progress} 
-                concurrency={5} 
-                onAbort={handleAbort} 
-              />
-            ) : (
-              <ResponseViewer 
-                result={activeTab.result} 
-                loading={activeTab.loading} 
-                onAbort={handleAbort} 
-              />
+                    {activeTab.showCurl && (
+                      <div className="p-4 bg-black border border-emerald-500/20 rounded font-mono space-y-3 relative group overflow-hidden shadow-2xl">
+                        <div className="absolute top-0 left-0 w-[2px] h-full bg-emerald-500"></div>
+                        <div className="flex items-center justify-between opacity-50 group-hover:opacity-100 transition-opacity">
+                          <span className="text-emerald-500 font-bold text-[9px] tracking-[0.2em]">CURL_ORCHESTRATION_PREVIEW</span>
+                          <span className="text-slate-700 text-[9px] font-black">{activeTab.batchMode ? 'CONCURRENT_BATCH' : 'SINGLE_THREAD'}</span>
+                        </div>
+                        <pre className="text-emerald-400 text-xs whitespace-pre-wrap break-all leading-relaxed max-h-60 overflow-y-auto no-scrollbar selection:bg-emerald-500/30">
+                          {(() => {
+                            const resolved = getResolvedConfig(activeTab);
+                            const isGraphql = resolved.method === 'GRAPHQL';
+                            const method = isGraphql ? 'POST' : resolved.method;
+                            const finalHeaders = { ...resolved.headers };
+                            if (isGraphql && !finalHeaders['Content-Type']) {
+                              finalHeaders['Content-Type'] = 'application/json';
+                            }
+                            
+                            const headerString = Object.entries(finalHeaders)
+                              .map(([k,v]) => `-H "${k}: ${v}"`)
+                              .join(' ');
+                              
+                            const baseCurl = `curl -X ${method} "${resolved.url}" ${headerString} ${resolved.body ? `-d '${resolved.body.replace(/'/g, "'\\''")}'` : ''}`;
+                            
+                            if (activeTab.batchMode) {
+                              return `# CONCURRENT_BATCH_MODE (10 REQS / 5 THREADS)\nseq 10 | xargs -I {} -P 5 ${baseCurl}`;
+                            }
+                            return baseCurl;
+                          })()}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                     {/* Parameters and Body implementation */}
+                     <section className="mb-6">
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                           <List size={10} /> Headers_Matrix
+                        </label>
+                        <button 
+                          onClick={() => updateActiveTab({ headersList: [...activeTab.headersList, { id: uuidv4(), key: '', value: '' }] })}
+                          className="text-emerald-500"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+                      <div className="space-y-1.5">
+                        {activeTab.headersList.map((h) => (
+                          <div key={h.id} className="flex gap-1 group">
+                            <input
+                              value={h.key}
+                              onChange={(e) => {
+                                const newList = activeTab.headersList.map(item => item.id === h.id ? { ...item, key: e.target.value } : item);
+                                updateActiveTab({ headersList: newList });
+                              }}
+                              placeholder="Key"
+                              className="flex-1 bg-slate-900 border border-slate-800/80 rounded px-2 py-1.5 text-[11px] font-mono outline-none"
+                            />
+                            <input
+                              value={h.value}
+                              onChange={(e) => {
+                                const newList = activeTab.headersList.map(item => item.id === h.id ? { ...item, value: e.target.value } : item);
+                                updateActiveTab({ headersList: newList });
+                              }}
+                              placeholder="Value"
+                              className="flex-1 bg-slate-900 border border-slate-800/80 rounded px-2 py-1.5 text-[11px] font-mono outline-none"
+                            />
+                            <button 
+                              onClick={() => {
+                                const newList = activeTab.headersList.filter(item => item.id !== h.id);
+                                updateActiveTab({ headersList: newList });
+                              }}
+                              className="text-slate-600 hover:text-rose-500 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                     </section>
+
+                     {['POST', 'PUT', 'PATCH'].includes(activeTab.config.method) && (
+                      <section>
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                             <FileJson size={10} /> Payload_JSON
+                          </label>
+                          <button 
+                            onClick={() => {
+                               try {
+                                 const obj = JSON.parse(activeTab.config.body || '');
+                                 updateActiveConfig({ body: JSON.stringify(obj, null, 2) });
+                               } catch (e) {
+                                 showCustomAlert('INVALID JSON', 'Malformed syntax detected. Ensure keys and values are properly quoted.');
+                               }
+                            }}
+                            className="text-[9px] font-mono text-slate-600 hover:text-emerald-500 uppercase transition-colors"
+                          >
+                            Prettify_JSON
+                          </button>
+                        </div>
+                        <textarea
+                          value={activeTab.config.body}
+                          onChange={(e) => updateActiveConfig({ body: e.target.value })}
+                          className="w-full bg-black border border-slate-850 rounded p-3 font-mono text-[11px] text-emerald-450/80 outline-none h-40 resize-none"
+                        />
+                      </section>
+                     )}
+
+                     {activeTab.config.method === 'GRAPHQL' && (
+                      <section className="space-y-6">
+                        <div>
+                          <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-3 flex items-center gap-2">
+                             <Layers size={10} className="text-violet-500" /> GraphQL_Query
+                          </label>
+                          <textarea
+                            value={activeTab.graphqlQuery || ''}
+                            onChange={(e) => updateActiveTab({ graphqlQuery: e.target.value })}
+                            placeholder="query MyQuery { ... }"
+                            className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-violet-400/80 outline-none h-48 resize-none shadow-inner"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-3">
+                            <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
+                               <Database size={10} className="text-blue-500" /> Variables_JSON
+                            </label>
+                            <button 
+                              onClick={() => {
+                                 try {
+                                   const obj = JSON.parse(activeTab.graphqlVariables || '{}');
+                                   updateActiveTab({ graphqlVariables: JSON.stringify(obj, null, 2) });
+                                 } catch (e) {
+                                   showCustomAlert('INVALID JSON', 'Malformed syntax in GraphQL variables detector. Ensure keys and values are properly quoted.');
+                                 }
+                              }}
+                              className="text-[9px] font-mono text-slate-600 hover:text-blue-400 uppercase transition-colors"
+                            >
+                              Format_Vars
+                            </button>
+                          </div>
+                          <textarea
+                            value={activeTab.graphqlVariables || ''}
+                            onChange={(e) => updateActiveTab({ graphqlVariables: e.target.value })}
+                            placeholder='{ "id": 1 }'
+                            className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-blue-400/80 outline-none h-24 resize-none"
+                          />
+                        </div>
+                      </section>
+                     )}
+                  </div>
+                </div>
+
+                <div className="w-full lg:w-1/2 flex flex-col bg-black overflow-hidden border-t lg:border-t-0 border-slate-850">
+                  {activeTab.batchMode ? (
+                    <BatchViewer 
+                      results={activeTab.batchResults} 
+                      progress={activeTab.progress} 
+                      concurrency={5} 
+                      onAbort={handleAbort} 
+                    />
+                  ) : (
+                    <ResponseViewer 
+                      result={activeTab.result} 
+                      loading={activeTab.loading} 
+                      onAbort={handleAbort} 
+                    />
+                  )}
+                </div>
+              </motion.div>
             )}
-          </div>
+
+            {view === 'lab' && (
+              <motion.div 
+                key="lab"
+                initial={{ opacity: 0, scale: 0.99 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={{ duration: 0.15 }}
+                className="absolute inset-0 overflow-hidden"
+              >
+                <TestLab 
+                  config={activeTab.config}
+                  headersList={activeTab.headersList}
+                  ws={ws}
+                  activeTabId={activeTabId}
+                  loading={activeTab.loading}
+                  progress={activeTab.progress}
+                  results={activeTab.batchResults}
+                  onStart={handleStartLabTest}
+                  onAbort={handleAbort}
+                />
+              </motion.div>
+            )}
+
+            {view === 'variables' && (
+              <motion.div 
+                key="variables"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                transition={{ duration: 0.15 }}
+                className="absolute inset-0 overflow-y-auto p-8 custom-scrollbar bg-[#0B0D11]"
+              >
+                <div className="max-w-4xl mx-auto">
+                  <VariablesManager variables={variables} onVariablesChange={setVariables} />
+                </div>
+              </motion.div>
+            )}
+
+            {view === 'history' && (
+              <motion.div 
+                key="history"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                transition={{ duration: 0.15 }}
+                className="absolute inset-0 overflow-y-auto p-8 custom-scrollbar bg-[#0B0D11]"
+              >
+                <div className="max-w-4xl mx-auto flex flex-col h-full overflow-hidden">
+                  <div className="flex items-center justify-between mb-4 shrink-0">
+                     <h2 className="text-sm font-bold text-slate-300 font-mono tracking-widest flex items-center gap-2 uppercase">
+                        <History size={14} className="text-emerald-500" /> System_History_Logs
+                     </h2>
+                     <div className="text-[9px] text-slate-500 font-mono bg-slate-800 px-2 py-1 rounded">RETENTION: 100_ENTRIES</div>
+                  </div>
+                  <HistoryList />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-      ) : (
-          <TestLab 
-            config={activeTab.config}
-            headersList={activeTab.headersList}
-            ws={ws}
-            activeTabId={activeTabId}
-            loading={activeTab.loading}
-            progress={activeTab.progress}
-            results={activeTab.batchResults}
-            onStart={handleStartLabTest}
-            onAbort={handleAbort}
-          />
-        )}
+
+        {/* Nominal status footer */}
+        <footer className="h-8 border-t border-[#1E293B] bg-[#0F1115] flex items-center justify-between px-4 text-[10px] font-mono text-slate-500 shrink-0">
+          <div className="flex gap-4">
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> SYSTEM: NOMINAL
+            </span>
+            <span>LATENCY: {telemetry.latency}</span>
+            <span>THREADS: {telemetry.activeWorkers}/{telemetry.maxWorkers}</span>
+            <span className="opacity-50">|</span>
+            <span>CLIENTS: {telemetry.clientCount}</span>
+          </div>
+          <div className="flex gap-4">
+            <span>v0.4.2-alpha</span>
+            <span className="text-slate-300 underline cursor-pointer hover:text-emerald-400">VIEW_RAW_LOGS</span>
+          </div>
+        </footer>
       </main>
+
+      {/* Custom Terminal Dialog Modal Overlay */}
+      <AnimatePresence>
+        {dialog.isOpen && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 font-mono select-none">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="w-full max-w-sm bg-[#12161E] border border-slate-800 rounded-lg shadow-2xl overflow-hidden text-slate-300"
+            >
+              {/* Modal Header */}
+              <div className="px-4 py-3 bg-[#161B25] border-b border-slate-800 flex justify-between items-center shrink-0">
+                <span className="text-[10px] font-black tracking-widest text-emerald-400 flex items-center gap-2 uppercase">
+                  <Terminal size={12} /> {dialog.title}
+                </span>
+                <button
+                  onClick={() => setDialog(prev => ({ ...prev, isOpen: false }))}
+                  className="text-slate-500 hover:text-white transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-5 space-y-4">
+                <p className="text-[10px] text-slate-400 leading-normal uppercase font-mono">
+                  {dialog.message}
+                </p>
+
+                {/* PROMPT_TEXT Field */}
+                {dialog.type === 'PROMPT_TEXT' && (
+                  <input
+                    type="text"
+                    value={dialog.inputVal || ''}
+                    onChange={(e) => setDialog(prev => ({ ...prev, inputVal: e.target.value }))}
+                    className="w-full bg-black border border-slate-800 rounded p-2 text-[11px] font-mono text-emerald-400 focus:border-slate-700 outline-none uppercase"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        dialog.onConfirm(dialog.inputVal);
+                      }
+                    }}
+                  />
+                )}
+
+                {/* SAVE_REQUEST Multi-Field layout */}
+                {dialog.type === 'SAVE_REQUEST' && (
+                  <div className="space-y-3 font-mono">
+                    <div className="space-y-1">
+                      <label className="text-[8px] text-slate-500 uppercase tracking-widest block font-bold">Request Identifier</label>
+                      <input
+                        type="text"
+                        value={dialog.inputVal || ''}
+                        onChange={(e) => setDialog(prev => ({ ...prev, inputVal: e.target.value }))}
+                        className="w-full bg-black border border-slate-800 rounded p-2 text-[11px] text-emerald-400 focus:border-slate-700 outline-none"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[8px] text-slate-500 uppercase tracking-widest block font-bold">Target Collection</label>
+                      <select
+                        value={dialog.selectedColId || ''}
+                        onChange={(e) => setDialog(prev => ({ ...prev, selectedColId: e.target.value }))}
+                        className="w-[#100%] bg-black border border-slate-800 rounded p-2 text-[11px] text-slate-300 focus:border-slate-700 outline-none"
+                      >
+                        {collections.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer / Interactive Buttons */}
+              <div className="px-5 py-3.5 bg-[#10141C] border-t border-slate-850 flex justify-end gap-2.5">
+                {dialog.type !== 'ALERT' && (
+                  <button
+                    onClick={() => setDialog(prev => ({ ...prev, isOpen: false }))}
+                    className="px-3 py-1 border border-slate-800 hover:border-slate-700 hover:bg-slate-900 text-[9px] font-bold text-slate-400 hover:text-white rounded uppercase tracking-wider transition-all"
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (dialog.type === 'SAVE_REQUEST') {
+                      dialog.onConfirm(dialog.inputVal, dialog.selectedColId);
+                    } else if (dialog.type === 'PROMPT_TEXT') {
+                      dialog.onConfirm(dialog.inputVal);
+                    } else {
+                      dialog.onConfirm();
+                    }
+                  }}
+                  className="px-4 py-1 bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 hover:border-emerald-500 text-emerald-400 hover:text-white text-[9px] font-black uppercase tracking-wider rounded transition-all shadow-sm"
+                >
+                  Confirm
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -975,7 +1552,7 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
         ) : (
            <div className="space-y-0 break-all">
              {activeResTab === 'body' && (() => {
-               const bodyStr = result.body.trim();
+               const bodyStr = (result.body || '').trim();
                try {
                  const json = JSON.parse(bodyStr);
                  return <JsonPretty data={json} />;
@@ -990,7 +1567,7 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
                          </div>
                          <button 
                            onClick={() => {
-                             const blob = new Blob([result.body], { type: 'text/html' });
+                             const blob = new Blob([result.body || ''], { type: 'text/html' });
                              const url = URL.createObjectURL(blob);
                              window.open(url, '_blank');
                            }}
@@ -1000,12 +1577,12 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
                          </button>
                        </div>
                        <div className="opacity-60 font-sans text-[10px] bg-slate-900/50 p-4 rounded border border-slate-800 break-words whitespace-pre-wrap max-h-[400px] overflow-y-auto custom-scrollbar">
-                         {result.body}
+                         {result.body || ''}
                        </div>
                      </div>
                    );
                  }
-                 return <span className="opacity-80 block whitespace-pre-wrap">{result.body}</span>;
+                 return <span className="opacity-80 block whitespace-pre-wrap">{result.body || ''}</span>;
                }
              })()}
              
