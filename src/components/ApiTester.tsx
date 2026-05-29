@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Play, Plus, Minus, Cpu, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight, Beaker, Activity, RefreshCw, AlertTriangle, History, Sliders, Sun, Moon } from 'lucide-react';
+import { Play, Plus, Minus, Cpu, X, Copy, Trash2, ChevronDown, ChevronUp, Clock, FileJson, List, Gauge, Zap, Terminal, Layers, Folder, Database, Layout, Maximize2, Minimize2, Save, FileText, ChevronLeft, ChevronRight, Beaker, Activity, RefreshCw, AlertTriangle, History, Sliders, Sun, Moon, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'recharts';
 import { cn } from '../lib/utils';
@@ -729,81 +729,7 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
               </button>
             </div>
 
-            {!isSidebarCollapsed && (
-              <section className="space-y-4">
-                <div className="flex items-center justify-between px-2 pt-4">
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">COLLECTIONS</span>
-                  <button 
-                    onClick={addCollection}
-                    className="text-slate-400 hover:text-emerald-500 transition-colors cursor-pointer"
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-                <div className="space-y-4">
-                  {collections.map(col => (
-                    <div key={col.id} className="space-y-1.5">
-                      <div className="text-[10px] font-bold text-slate-305 px-2 flex items-center justify-between group/col">
-                        <div className="flex items-center gap-2.5">
-                          <Folder size={13} className="text-emerald-500" /> {col.name}
-                        </div>
-                        <div className="flex items-center gap-1.5 opacity-0 group-hover/col:opacity-100 transition-all">
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); runCollection(col.id); }}
-                            className="p-1 text-slate-400 hover:text-emerald-500 transition-colors"
-                            title="RUN_COLLECTION"
-                          >
-                            <Play size={11} fill="currentColor" />
-                          </button>
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); duplicateCollection(col.id); }}
-                            className="p-1 text-slate-400 hover:text-blue-500 transition-colors"
-                            title="DUPLICATE"
-                          >
-                            <Copy size={11} />
-                          </button>
-                          {col.id !== 'default' && (
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); deleteCollection(col.id); }}
-                              className="p-1 text-slate-500 hover:text-rose-500 transition-all"
-                              title="DELETE"
-                            >
-                              <Trash2 size={11} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div className="space-y-1 ml-1">
-                        {col.requests.map(req => (
-                          <div key={req.id} className="group flex items-center pr-2">
-                            <button
-                               onClick={() => { setView('debugger'); createTab(req); }}
-                               className="flex-1 text-left px-3 py-2 text-xs font-mono text-slate-350 hover:text-emerald-400 hover:bg-emerald-500/5 transition-all flex items-center gap-2.5 truncate"
-                            >
-                              <span className={cn(
-                                "w-7 text-[9px] font-black text-center rounded py-0.5 shrink-0",
-                                req.method === 'GET' ? "text-emerald-400 bg-emerald-500/10" :
-                                req.method === 'POST' ? "text-blue-400 bg-blue-500/10" :
-                                req.method === 'GRAPHQL' ? "text-violet-400 bg-violet-500/10" : "text-amber-400 bg-amber-500/10"
-                              )}>
-                                {req.method === 'GRAPHQL' ? 'GQL' : req.method[0]}
-                              </span>
-                              <span className="truncate opacity-80">{req.name}</span>
-                            </button>
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); deleteRequest(col.id, req.id); }}
-                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-450 hover:text-rose-500 transition-all cursor-pointer"
-                            >
-                              <Trash2 size={11} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
+
           </div>
 
         {!isSidebarCollapsed && (
@@ -1047,22 +973,6 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                 {/* Active Tab Panel */}
                 <div className="w-full lg:w-1/2 border-r border-slate-800 flex flex-col bg-[#0B0D11] overflow-y-auto no-scrollbar">
                   <div className="p-4 border-b border-slate-800 flex flex-col gap-4 shrink-0">
-                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-                      {[
-                        { name: 'Reset', url: 'http://localhost:3000/api/race-demo/reset', method: 'POST' },
-                        { name: 'Broken_Buy', url: 'http://localhost:3000/api/orders/broken/place', method: 'POST' },
-                        { name: 'Fixed_Buy', url: 'http://localhost:3000/api/orders/fixed/place', method: 'POST' }
-                      ].map(ep => (
-                        <button 
-                          key={ep.name}
-                          onClick={() => updateActiveConfig({ url: ep.url, method: ep.method as any })}
-                          className="text-[9px] font-mono bg-slate-900/50 border border-slate-800 px-2 py-0.5 rounded text-slate-500 hover:text-emerald-500 hover:border-emerald-500/30 transition-all uppercase whitespace-nowrap"
-                        >
-                          {ep.name}
-                        </button>
-                      ))}
-                    </div>
-                    
                     {/* REST vs GraphQL High-Level Workspace Switcher */}
                     <div className="flex bg-[#0A0C10] border border-slate-800/80 rounded p-0.5 w-full">
                       <button
@@ -1282,20 +1192,20 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                      )}
 
                      {activeTab.config.method === 'GRAPHQL' && (
-                      <section className="space-y-6">
-                         <div>
-                          <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-3 flex items-center gap-2">
+                      <section className="flex flex-col gap-4 min-h-[580px] lg:h-[calc(100vh-320px)]">
+                         <div className="flex-1 flex flex-col min-h-[220px]">
+                          <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest mb-2 flex items-center gap-2 shrink-0">
                             <Layers size={10} className="text-violet-500" /> GraphQL_Query
                           </label>
                           <textarea
                             value={activeTab.graphqlQuery || ''}
                             onChange={(e) => updateActiveTab({ graphqlQuery: e.target.value })}
                             placeholder="query MyQuery { ... }"
-                            className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-violet-400/80 outline-none h-48 resize-none shadow-inner"
+                            className="w-full flex-1 bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-violet-400/80 outline-none resize-none shadow-inner animate-pulse-subtle"
                           />
                         </div>
-                        <div>
-                          <div className="flex items-center justify-between mb-3">
+                        <div className="h-44 md:h-[220px] flex flex-col shrink-0">
+                          <div className="flex items-center justify-between mb-2 shrink-0">
                             <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest flex items-center gap-2">
                                <Database size={10} className="text-blue-500" /> Variables_JSON
                             </label>
@@ -1308,7 +1218,7 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                                    showCustomAlert('INVALID JSON', 'Malformed syntax in GraphQL variables detector. Ensure keys and values are properly quoted.');
                                  }
                               }}
-                              className="text-[9px] font-mono text-slate-600 hover:text-blue-400 uppercase transition-colors"
+                              className="text-[9px] font-mono text-slate-600 hover:text-blue-400 uppercase transition-colors pointer-events-auto"
                             >
                               Format_Vars
                             </button>
@@ -1317,7 +1227,7 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                             value={activeTab.graphqlVariables || ''}
                             onChange={(e) => updateActiveTab({ graphqlVariables: e.target.value })}
                             placeholder='{ "id": 1 }'
-                            className="w-full bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-blue-400/80 outline-none h-24 resize-none"
+                            className="w-full flex-1 bg-black border border-slate-800 rounded p-3 font-mono text-[11px] text-blue-400/80 outline-none resize-none"
                           />
                         </div>
                       </section>
@@ -1332,12 +1242,14 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                       progress={activeTab.progress} 
                       concurrency={5} 
                       onAbort={handleAbort} 
+                      theme={theme}
                     />
                   ) : (
                     <ResponseViewer 
                       result={activeTab.result} 
                       loading={activeTab.loading} 
                       onAbort={handleAbort} 
+                      theme={theme}
                     />
                   )}
                 </div>
@@ -1364,6 +1276,7 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
                   onStart={handleStartLabTest}
                   onAbort={handleAbort}
                   onChangeConfig={updateActiveConfig}
+                  onClearLogs={() => updateActiveTab({ batchResults: [], progress: null })}
                 />
               </motion.div>
             )}
@@ -1535,8 +1448,137 @@ export function ApiTester({ variables: initialVariables = {} }: { variables?: Re
 }
 
 // Keep original sub-components below with minor tweaks for tabs if needed...// Sub-components
-function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | null, loading: boolean, onAbort: () => void }) {
-  const [activeResTab, setActiveResTab] = useState<'body' | 'headers' | 'raw' | 'result'>('body');
+function JsonInteractiveNode({ label, val, isLast = true }: { label?: string; val: any; isLast?: boolean; key?: any }) {
+  const [collapsed, setCollapsed] = useState(true);
+
+  if (val === null) {
+    return (
+      <div className="pl-4 py-0.5 select-none font-mono text-[11px]">
+        {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+        {label && <span className="text-slate-500 mr-1">:</span>}
+        <span className="text-slate-500 font-semibold italic">null</span>
+        {!isLast && <span className="text-slate-500">,</span>}
+      </div>
+    );
+  }
+
+  const type = typeof val;
+
+  if (type === 'string') {
+    return (
+      <div className="pl-4 py-0.5 select-text font-mono text-[11px] break-all">
+        {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+        {label && <span className="text-slate-500 mr-1">:</span>}
+        <span className="text-emerald-400">"{val}"</span>
+        {!isLast && <span className="text-slate-500">,</span>}
+      </div>
+    );
+  }
+
+  if (type === 'number') {
+    return (
+      <div className="pl-4 py-0.5 select-text font-mono text-[11px]">
+        {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+        {label && <span className="text-slate-500 mr-1">:</span>}
+        <span className="text-amber-500 font-bold">{val}</span>
+        {!isLast && <span className="text-slate-500">,</span>}
+      </div>
+    );
+  }
+
+  if (type === 'boolean') {
+    return (
+      <div className="pl-4 py-0.5 select-text font-mono text-[11px]">
+        {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+        {label && <span className="text-slate-500 mr-1">:</span>}
+        <span className="text-violet-400 font-black">{val.toString()}</span>
+        {!isLast && <span className="text-slate-500">,</span>}
+      </div>
+    );
+  }
+
+  if (Array.isArray(val)) {
+    if (val.length === 0) {
+      return (
+        <div className="pl-4 py-0.5 font-mono text-[11px]">
+          {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+          {label && <span className="text-slate-500 mr-1">:</span>}
+          <span className="text-slate-600">[]</span>
+          {!isLast && <span className="text-slate-500">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div className="pl-4 py-0.5 font-mono text-[11px]">
+        <div className="flex items-center gap-1.5 cursor-pointer select-none hover:bg-slate-800/10 dark:hover:bg-slate-800/25 rounded px-1 -ml-1 transition-colors" onClick={() => setCollapsed(!collapsed)}>
+          <span className={cn("text-slate-500 text-[8px] transition-transform duration-150 inline-block", collapsed ? "-rotate-90" : "rotate-0")}>▼</span>
+          {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+          {label && <span className="text-slate-500 mr-1">:</span>}
+          <span className="text-slate-400 text-[10px]">Array({val.length})</span>
+          <span className="text-slate-500 ml-1">{"["}</span>
+          {collapsed && <span className="text-slate-500">... ]</span>}
+        </div>
+        {!collapsed && (
+          <div className="border-l border-slate-800/40 ml-1.5 pl-3 transition-all">
+            {val.map((item, idx) => (
+              <JsonInteractiveNode key={idx} val={item} isLast={idx === val.length - 1} />
+            ))}
+          </div>
+        )}
+        {!collapsed && <div className="text-slate-500 pl-4">{"]"}</div>}
+      </div>
+    );
+  }
+
+  if (type === 'object') {
+    const keys = Object.keys(val);
+    if (keys.length === 0) {
+      return (
+        <div className="pl-4 py-0.5 font-mono text-[11px]">
+          {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+          {label && <span className="text-slate-500 mr-1">:</span>}
+          <span className="text-slate-600">{"{}"}</span>
+          {!isLast && <span className="text-slate-500">,</span>}
+        </div>
+      );
+    }
+
+    return (
+      <div className="pl-4 py-0.5 font-mono text-[11px]">
+        <div className="flex items-center gap-1.5 cursor-pointer select-none hover:bg-slate-800/10 dark:hover:bg-slate-800/25 rounded px-1 -ml-1 transition-colors" onClick={() => setCollapsed(!collapsed)}>
+          <span className={cn("text-slate-500 text-[8px] transition-transform duration-150 inline-block", collapsed ? "-rotate-90" : "rotate-0")}>▼</span>
+          {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+          {label && <span className="text-slate-500 mr-1">:</span>}
+          <span className="text-slate-400 font-sans text-[10px]">Object</span>
+          <span className="text-slate-500 ml-1">{"{"}</span>
+          {collapsed && <span className="text-slate-500">... {"}"}</span>}
+        </div>
+        {!collapsed && (
+          <div className="border-l border-slate-800/40 ml-1.5 pl-3 transition-all">
+            {keys.map((k, idx) => (
+              <JsonInteractiveNode key={k} label={k} val={val[k]} isLast={idx === keys.length - 1} />
+            ))}
+          </div>
+        )}
+        {!collapsed && <div className="text-slate-500 pl-4">{"}"}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="pl-4 py-0.5 font-mono text-[11px]">
+      {label && <span className="text-blue-400 font-bold">"{label}"</span>}
+      {label && <span className="text-slate-500 mr-1">:</span>}
+      <span className="text-slate-400">{String(val)}</span>
+      {!isLast && <span className="text-slate-500">,</span>}
+    </div>
+  );
+}
+
+// Keep original sub-components below with minor tweaks for tabs if needed...// Sub-components
+function ResponseViewer({ result, loading, onAbort, theme = 'dark' }: { result: CurlResult | null, loading: boolean, onAbort: () => void, theme?: 'dark' | 'light' }) {
+  const [activeResTab, setActiveResTab] = useState<'response' | 'preview' | 'headers' | 'raw' | 'result'>('response');
 
   if (loading) {
     return (
@@ -1579,42 +1621,93 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
   }
 
   const isSuccess = result.status >= 200 && result.status < 300;
+  
+  // Calculate size in readable format
+  const bodyLength = result.body ? result.body.length : 0;
+  const formattedSize = bodyLength > 1024 
+    ? `${(bodyLength / 1024).toFixed(1)} KB` 
+    : `${bodyLength} B`;
+
+  const reqLength = result.requestSize !== undefined ? result.requestSize : 0;
+  const formattedReqSize = reqLength > 1024
+    ? `${(reqLength / 1024).toFixed(1)} KB`
+    : `${reqLength} B`;
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-black">
       <div className="flex items-center justify-between p-2 px-4 border-b border-slate-900 bg-[#0F1115] shrink-0">
          <div className="flex items-center gap-6">
-           <div className="flex flex-col">
-              <span className="text-[7px] font-black text-slate-600 uppercase tracking-tighter">HTTP_STATUS</span>
-              <span className={cn("text-[11px] font-black tracking-tight", isSuccess ? "text-emerald-500" : "text-rose-500")}>
-                {result.status} {isSuccess ? 'SUCCESS' : 'FAILURE'}
-              </span>
-           </div>
-           <div className="flex flex-col">
-              <span className="text-[7px] font-black text-slate-600 uppercase tracking-tighter">RESPONSE_TIME</span>
-              <span className="text-[11px] font-black text-blue-400 font-mono">
-                {result.responseTime}ms
-              </span>
-           </div>
+            <div className="flex flex-col">
+               <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-tighter">HTTP_STATUS</span>
+               <span className={cn("text-[14px] font-black tracking-tight flex items-center gap-1.5", theme === 'light' ? "text-black" : "text-white")}>
+                 {result.status} 
+                 <span className={cn("text-[8px] px-1 py-0.5 rounded font-black tracking-wider uppercase", isSuccess ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20" : "bg-rose-500/10 text-rose-500 border border-rose-500/20")}>
+                   {isSuccess ? 'OK' : 'ERR'}
+                 </span>
+               </span>
+            </div>
+            <div className="flex flex-col">
+               <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-tighter">RESPONSE_TIME</span>
+               <span className={cn("text-[14px] font-black font-mono", theme === 'light' ? "text-black" : "text-white")}>
+                 {result.responseTime}<span className="text-[9px] text-blue-500 font-bold ml-0.5">ms</span>
+               </span>
+            </div>
+            <div className="flex flex-col">
+               <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-tighter">REQ_SIZE</span>
+               <span className={cn("text-[14px] font-black font-mono", theme === 'light' ? "text-black" : "text-white")}>
+                 {formattedReqSize}
+               </span>
+            </div>
+            <div className="flex flex-col">
+               <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-tighter">DATA_SIZE</span>
+               <span className={cn("text-[14px] font-black font-mono", theme === 'light' ? "text-black" : "text-white")}>
+                 {formattedSize}
+               </span>
+            </div>
          </div>
-         <div className="flex gap-1 bg-black/40 p-1 rounded border border-slate-800">
-           {(['body', 'headers', 'raw', 'result'] as const).map(tab => (
-             <button 
-               key={tab}
-               onClick={() => setActiveResTab(tab)}
-               className={cn(
-                 "text-[9px] px-2 py-1 rounded-[1px] font-black transition-all uppercase tracking-widest", 
-                 activeResTab === tab ? "bg-slate-800 text-white" : "text-slate-600 hover:text-slate-400"
-               )}
-             >
-               {tab}
-             </button>
-           ))}
+         
+         <div className="flex items-center gap-2">
+           <div className="flex gap-1 bg-black/40 p-1 rounded border border-slate-800">
+             {(['response', 'preview', 'headers', 'raw', 'result'] as const).map(tab => (
+               <button 
+                 key={tab}
+                 onClick={() => setActiveResTab(tab)}
+                 className={cn(
+                   "text-[9px] px-2.5 py-1 rounded-[1px] font-black transition-all uppercase tracking-widest cursor-pointer select-none", 
+                   activeResTab === tab ? "bg-slate-800 text-white" : "text-slate-600 hover:text-slate-400"
+                 )}
+               >
+                 {tab === 'response' ? 'RESPONSE' : tab}
+               </button>
+             ))}
+           </div>
+
+           {/* QA Quick Copy Helper */}
+           <button
+             onClick={() => {
+               let text = '';
+               if (activeResTab === 'response' || activeResTab === 'preview') {
+                 text = result.body || '';
+               } else if (activeResTab === 'headers') {
+                 text = Object.entries(result.headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+               } else if (activeResTab === 'raw') {
+                 text = result.rawOutput || '';
+               } else if (activeResTab === 'result') {
+                 text = JSON.stringify(result, null, 2);
+               }
+               navigator.clipboard.writeText(text);
+             }}
+             className="p-1 px-3 bg-[#0B0D11] border border-slate-800 text-[9px] text-slate-400 hover:text-emerald-400 hover:border-emerald-500/30 rounded flex items-center gap-1.5 transition-all font-mono font-bold cursor-pointer"
+             title="Copy active tab content to clipboard"
+           >
+             <Copy size={10} />
+             <span>COPY</span>
+           </button>
          </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-8 font-mono text-xs leading-relaxed custom-scrollbar selection:bg-emerald-500/20 text-emerald-500/90">
-        {result.error && activeResTab === 'body' ? (
+      <div className="flex-1 overflow-auto p-6 font-mono text-xs leading-relaxed custom-scrollbar selection:bg-emerald-500/20 text-emerald-500/90">
+        {result.error && activeResTab !== 'headers' && activeResTab !== 'raw' && activeResTab !== 'result' ? (
            <div className="text-rose-400 bg-rose-500/5 p-6 rounded border border-rose-500/10 backdrop-blur-sm">
              <div className="text-[11px] font-black mb-4 uppercase tracking-[0.2em] opacity-80 flex items-center gap-3">
                 <AlertTriangle size={16} /> EXCEPTION_CAUGHT
@@ -1623,7 +1716,91 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
            </div>
         ) : (
            <div className="space-y-0 break-all">
-             {activeResTab === 'body' && (() => {
+             {activeResTab === 'preview' && (() => {
+                const bodyStr = (result.body || '').trim();
+                const contentType = (result.headers['content-type'] || result.headers['Content-Type'] || '').toLowerCase();
+                
+                // HTML Preview Selection
+                if (contentType.includes('text/html') || bodyStr.startsWith('<!DOCTYPE') || bodyStr.startsWith('<html') || bodyStr.startsWith('<div')) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-[9px] text-slate-405 font-mono uppercase bg-slate-900/30 p-2.5 border border-slate-900/80 rounded">
+                        <span className="font-bold flex items-center gap-2 text-emerald-500">
+                          <Layout size={12} /> BROWSER_RENDER_FRAME
+                        </span>
+                        <span className="font-bold text-slate-500">SANBOXED_HTML</span>
+                      </div>
+                      <iframe 
+                        title="HTML Response Preview"
+                        srcDoc={result.body || ''} 
+                        sandbox="allow-scripts" 
+                        loading="lazy"
+                        className="w-full h-[400px] bg-white rounded-lg border border-slate-300"
+                      />
+                    </div>
+                  );
+                }
+
+                // Vector or Image Asset Preview Selection
+                if (contentType.includes('image/') || bodyStr.startsWith('<svg')) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-[9px] text-slate-405 font-mono uppercase bg-slate-900/30 p-2.5 border border-slate-900/80 rounded">
+                        <span className="font-bold flex items-center gap-2 text-blue-400">
+                          <Activity size={12} /> VECTOR_OR_IMAGE_ASSET
+                        </span>
+                        <span className="font-semibold text-slate-500">RENDERED_PREVIEW</span>
+                      </div>
+                      <div className="flex items-center justify-center p-8 bg-slate-900/10 border border-slate-900 rounded-lg min-h-[280px]">
+                        {bodyStr.startsWith('<svg') ? (
+                          <div dangerouslySetInnerHTML={{ __html: result.body || '' }} className="max-w-full max-h-[350px]" />
+                        ) : (
+                          <img 
+                            src={bodyStr.startsWith('data:') ? bodyStr : `data:${contentType};base64,${bodyStr}`} 
+                            alt="Response Asset" 
+                            className="max-w-full max-h-[350px] object-contain border border-slate-200 rounded" 
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Interactive Collapsible browser-like JSON Explorer
+                try {
+                  const json = JSON.parse(bodyStr);
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-[9px] text-slate-405 font-mono uppercase bg-slate-900/30 p-2.5 border border-slate-900/80 rounded">
+                        <span className="font-bold text-emerald-500 flex items-center gap-2">
+                          <FileJson size={12} /> INTERACTIVE_JSON_EXPLORER
+                        </span>
+                        <span className="text-[8px] font-bold text-slate-500">Click arrows to browse response object</span>
+                      </div>
+                      <div className="bg-slate-950/40 border border-slate-900 p-4 rounded-lg">
+                        <JsonInteractiveNode val={json} isLast={true} />
+                      </div>
+                    </div>
+                  );
+                } catch {
+                  // Fallback to beautiful text preview
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-[9px] text-slate-405 font-mono uppercase bg-slate-900/30 p-2.5 border border-slate-900/80 rounded">
+                        <span className="font-bold flex items-center gap-2 text-slate-400">
+                          <Info size={12} /> PLAIN_TEXT_PREVIEW
+                        </span>
+                      </div>
+                      <div className="p-4 bg-slate-950/20 border border-slate-900 rounded-lg font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all text-slate-300">
+                        {result.body || <span className="italic text-slate-500 uppercase font-black">Empty Response Body</span>}
+                      </div>
+                    </div>
+                  );
+                }
+              })()}
+
+             {activeResTab === 'response' && (() => {
                const bodyStr = (result.body || '').trim();
                try {
                  const json = JSON.parse(bodyStr);
@@ -1659,18 +1836,18 @@ function ResponseViewer({ result, loading, onAbort }: { result: CurlResult | nul
              })()}
              
              {activeResTab === 'headers' && (
-               <div className="space-y-2">
-                 {(Object.entries(result.headers) as [string, string][]).map(([k, v]) => (
-                   <div key={k} className="flex gap-4 border-b border-slate-900 pb-2">
-                      <span className="text-blue-500 font-black w-1/3 shrink-0 uppercase text-[9px] tracking-tight">{k}</span>
-                      <span className="text-slate-400 flex-1 break-all">{v}</span>
-                   </div>
-                 ))}
-               </div>
+                <div className="space-y-2">
+                  {(Object.entries(result.headers) as [string, string][]).map(([k, v]) => (
+                    <div key={k} className="flex gap-4 border-b border-slate-900 pb-2">
+                       <span className="text-blue-500 font-black w-1/3 shrink-0 uppercase text-[9px] tracking-tight">{k}</span>
+                       <span className="text-slate-400 flex-1 break-all">{v}</span>
+                    </div>
+                  ))}
+                </div>
              )}
 
              {activeResTab === 'raw' && (
-               <div className="text-slate-600 text-[10px] leading-tight whitespace-pre-wrap break-all">
+               <div className="text-slate-350 dark:text-slate-200 text-[13px] bg-slate-950/40 p-3.5 border border-slate-900 rounded-lg leading-relaxed whitespace-pre-wrap break-all">
                  {result.rawOutput}
                </div>
              )}
@@ -1735,7 +1912,7 @@ function JsonPretty({ data, level = 0 }: { data: any, level?: number }) {
    return <span>{String(data)}</span>;
 }
 
-function BatchViewer({ results, progress, concurrency, onAbort }: { results: CurlResult[], progress: ProgressUpdate | null, concurrency: number, onAbort: () => void }) {
+function BatchViewer({ results, progress, concurrency, onAbort, theme = 'dark' }: { results: CurlResult[], progress: ProgressUpdate | null, concurrency: number, onAbort: () => void, theme?: 'dark' | 'light' }) {
   const [selectedResult, setSelectedResult] = useState<CurlResult | null>(null);
   const successCount = results.filter(r => r.status >= 200 && r.status < 300).length;
   const failureCount = results.length - successCount;
@@ -1775,7 +1952,7 @@ function BatchViewer({ results, progress, concurrency, onAbort }: { results: Cur
           </button>
         </div>
         <div className="flex-1 overflow-hidden">
-          <ResponseViewer result={selectedResult} loading={false} onAbort={() => {}} />
+          <ResponseViewer result={selectedResult} loading={false} onAbort={() => {}} theme={theme} />
         </div>
       </div>
     );

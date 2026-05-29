@@ -19,6 +19,7 @@ export interface CurlResult {
   rawOutput: string;
   error?: string;
   curlCommand: string;
+  requestSize?: number;
 }
 
 export class CurlEngine {
@@ -76,11 +77,12 @@ export class CurlEngine {
     }).join(' ')}`;
     
     const startTime = Date.now();
+    const requestSize = config.body ? (typeof Buffer !== 'undefined' ? Buffer.byteLength(config.body, 'utf8') : config.body.length) : 0;
 
     if (signal?.aborted) {
       return {
         id, status: 0, headers: {}, body: '', responseTime: 0,
-        rawOutput: 'Aborted', error: 'Aborted', curlCommand
+        rawOutput: 'Aborted', error: 'Aborted', curlCommand, requestSize
       };
     }
 
@@ -147,7 +149,8 @@ export class CurlEngine {
         body: bodyText,
         responseTime,
         rawOutput,
-        curlCommand
+        curlCommand,
+        requestSize
       };
     } catch (err: any) {
       if (err.name === 'AbortError' || signal?.aborted) {
@@ -159,7 +162,8 @@ export class CurlEngine {
           responseTime: Date.now() - startTime,
           rawOutput: 'Request aborted by user',
           error: 'Aborted',
-          curlCommand
+          curlCommand,
+          requestSize
         };
       }
 
@@ -179,7 +183,8 @@ export class CurlEngine {
             responseTime: Date.now() - startTime,
             rawOutput: 'Request aborted by user',
             error: 'Aborted',
-            curlCommand
+            curlCommand,
+            requestSize
           });
         };
 
@@ -213,7 +218,8 @@ export class CurlEngine {
               responseTime,
               rawOutput: `Fetch failed entirely (${err.message}). Fallback curl exited with code ${code}.\n\nCurl stderr: ${stderr}`,
               error: `Fetch error: ${err.message}. Curl error: ${stderr || `Exit code ${code}`}`,
-              curlCommand
+              curlCommand,
+              requestSize
             });
             return;
           }
@@ -221,7 +227,7 @@ export class CurlEngine {
           if (code === null) return;
 
           const result = this.parseOutput(stdout, id, responseTime, curlCommand);
-          resolve(result);
+          resolve({ ...result, requestSize });
         });
       });
     }

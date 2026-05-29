@@ -9,7 +9,7 @@ import { cn } from '../lib/utils';
 import { RequestConfig, CurlResult } from '../server/modules/curl-engine';
 import { ProgressUpdate } from '../server/modules/runner';
 
-export type TestModuleId = 'blast' | 'race' | 'replay' | 'load' | 'chaos' | 'rate' | 'fuzzer' | 'scenario';
+export type TestModuleId = 'blast' | 'race' | 'replay' | 'load' | 'chaos' | 'rate' | 'fuzzer' | 'scenario' | 'security_audit';
 
 interface TestModule {
   id: TestModuleId;
@@ -129,8 +129,83 @@ const TEST_MODULES: TestModule[] = [
     settingsTitle: 'PIPELINE_STAGES',
     primaryMetric: 'CHAIN_SUCCESS',
     theory: 'Active clients don\'t run endpoints in isolation. Scenario testing orchestrates stateful changes to confirm transactional integrity across paths.'
+  },
+  {
+    id: 'security_audit',
+    name: 'SECURITY_AUDITOR',
+    description: 'Probes for SQLi, XSS, local file disclosure, and audits HTTP response headers and CORS hygiene.',
+    icon: <ShieldAlert size={16} />,
+    color: 'text-rose-400',
+    bgColor: 'bg-rose-500/20',
+    borderColor: 'border-rose-500/40',
+    strategy: 'VULNERABILITY_PROBE',
+    settingsTitle: 'PROBE_DEPTH',
+    primaryMetric: 'VULN_ALERTS',
+    theory: 'Automated vulnerability checkers scan for unescaped field projections. Mutating inputs with active exploits (SQLi, XSS, Directory Traversal) highlights vulnerable status codes and content reflections.'
   }
 ];
+
+const THEORETICAL_FRAMEWORKS: Record<TestModuleId, {
+  problem: string;
+  solution: string;
+  realLifeExample: string;
+  staffEngineeringDepth: string;
+}> = {
+  blast: {
+    problem: "When user traffic spikes suddenly (e.g., ticket sales or viral media surges), thousands of concurrent TCP sockets connect simultaneously. If the database connection pool is under-provisioned, or if blockages creep into the event loop, thread starvation sets in. The system spends more CPU cycles switching execution contexts than completing productive work (CPU Thrashing), escalating latencies exponentially until the service timeouts or crashes (504 Gateway Timeouts).",
+    solution: "CONCURRENT_BLAST testing floods the target with high-density parallel requests to identify thread pool bounds and database connection limits. By tracking API throughput (RPS) against scaling concurrency levels, we pinpoint the exact 'saturation inflection point' where throughput plateaus or drops while latencies rise sharply.",
+    realLifeExample: "A ticket vendor opens sales for a stadium show. Within 500ms of open-time, 50,000 requests hit the /checkout endpoint. The database connection pool is configured to a maximum of 20 connections; Postgres immediately queue-blocks connections. Node's event loop waits, Redis queries time out, and the entire API cluster fails under cascade backlog.",
+    staffEngineeringDepth: "To prevent thread starvation, decouple slow databases using event queues, increase database connection pools using multiplexers (e.g., PgBouncer), and integrate active load shedding (e.g., serving fast 503 errors when request queues exceed 200ms) to shelter the system from collapse."
+  },
+  race: {
+    problem: "Non-atomic update logic (Read-Modify-Write) allows 'dirty writes' when overlapping requests read identical state before changes write back. For example, if two payment requests query a $100 balance simultaneously, both see $100 and approve the spend. Both write back a remaining $50, resulting in $100 spent but a $50 final balance.",
+    solution: "RACE_DETECTOR injects tight concurrent payload mutations in a sub-millisecond window targeting the exact same record, trying to force state write collisions and highlighting missing row-level serialization or distributed locks.",
+    realLifeExample: "A flash sale occurs for a limited-stock console. Shoppers hit the 'Buy' trigger at the exact same millisecond. Multiple threads check 'stock_count = 1', validate, and decrement inventory. Both purchases succeed, resulting in double-allocation and overselling.",
+    staffEngineeringDepth: "Mitigate race conditions using Pessimistic Locking (SELECT FOR UPDATE) to lock database rows down during a read, Optimistic Locking (WHERE version = X) to fail operations if the record has moved, or distributed lock managers like Redis Redlock across dynamic cluster nodes."
+  },
+  replay: {
+    problem: "Noisy or malicious clients can intercept and resubmit identical request headers, signatures, or payloads. If transaction mutations lack deduplication checks, they process again, causing duplicate billing, duplicate item creation, or broken state integrity.",
+    solution: "REPLAY_GUARD clones authorization headers, payload structures, and telemetry markers, resending identical signatures sequentially to verify that the backend implements transaction-uniqueness constraints (Idempotency Guards) and safely logs duplicates.",
+    realLifeExample: "An unstable mobile connection causes a user's delivery request to hang. The app automatically retries. The web gateway processes each retry as a brand new command, generating three separate delivery orders and triple-charging the credit card.",
+    staffEngineeringDepth: "Enforce strict idempotency using unique Idempotency-Key headers on all mutative requests (POST/PATCH). Store these transaction keys in Redis with a short TTL (e.g., 24h). If a key state is 'Processing', return a transient lock-wait; if 'Completed', immediately serve the cached response without running downstream controllers."
+  },
+  load: {
+    problem: "Longer execution runs surface bugs that quick spikes miss. Gradual degradation (Performance Rot) from memory leaks, file descriptor starvation, index fragmentation, or un-garbage-collected heaps slowly pushes latency baselines up and crashes servers after hours of flawless usage.",
+    solution: "LOAD_CANNON runs extended, continuous request queues to test garbage collection efficiency, heap allocation trends, socket exhaustion under heavy load, and database slow-query regressions.",
+    realLifeExample: "An IoT telemetry engine receives data packets every minute. A tiny memory leak in an incoming string parser retains characters on the V8 heap. The microservice operates perfectly for 6 hours, then silently heaps out and crashes.",
+    staffEngineeringDepth: "Monitor Heap Allocation graphs during sustained load. Add strict timeouts to downstream connections to prevent file descriptor leaks, index critical query predicates, and set up alert limits at 80% RAM utilization to trigger controlled canary rolling restarts."
+  },
+  chaos: {
+    problem: "In microservice topologies, external networks, caches, or third-party gateways will eventually fail or run slow. If dependencies act synchronously without protection, a failure in a minor metadata service cascadingly starves threads across the entire ecosystem.",
+    solution: "CHAOS_MODE simulates network packet drops, connection closures, and high latency targets. This assesses whether circuit breakers, graceful degradation states, and timeout policies successfully guard primary customer flows.",
+    realLifeExample: "A shop's main product page tries to load item details, stock count, and personal recommendations. The recommendation service suffers a network timeout. Since the main route calls the service synchronously without key protection, the entire product page hangs and errors out with a 500 error instead of simply hiding recommendations.",
+    staffEngineeringDepth: "Wrap third-party and non-essential queries in resilient Circuit Breakers (such as Cockatiel or Hystrix), configure aggressive 500-1000ms socket timeouts, and return static fallbacks or cached models when downstream services fail."
+  },
+  rate: {
+    problem: "Unrestricted public APIs are highly vulnerable to scraping, brute-force hacking, credit card testing, and general Denial of Service (DoS) sweeps. If endpoints don't restrict repetitive queries, they consume high database resources, elevate operating costs, and block legitimate traffic.",
+    solution: "RATE_BREAKER initiates fast, iterative bursts of identical target requests to detect rate limits, monitoring if HTTP 429 (Too Many Requests) boundaries trigger and verifying back-off response headers (e.g., Retry-After).",
+    realLifeExample: "An authentication route /api/login lacks rate limits. An attacker runs a dictionary attack, executing 100 requests per second using distinct password lists, overwhelming CPU-heavy bcrypt hashing blocks and locking up the server database.",
+    staffEngineeringDepth: "Deploy sliding-window or token-bucket rate limit algorithms on edge gateways (e.g., Cloudflare, Nginx, API Gateway) rather than application code. Leverage Redis to aggregate key-hits mapped to user IDs or Client IPs with short sliding windows (e.g., 60 seconds)."
+  },
+  fuzzer: {
+    problem: "API modules parse untrusted payloads assuming structures are correct. Lacking strict schema isolation, unescaped field entries, type casting errors, or unexpected keys can trigger backend interpreter crashes, unhandled database queries, or server crashes.",
+    solution: "PAYLOAD_FUZZER alters payload variables, deletes keys, swaps types, and introduces giant buffers, proving that parser systems reject invalid input formats cleanly without leaking deep runtime traces or crashing the event loop.",
+    realLifeExample: "A search endpoint parses a filters query: {\"price\": 100}. An attacker injects MongoDB operators: {\"price\": {\"$gt\": 0}}. The database runs the query literally, exposing the entire product database rather than raising an invalid query exception.",
+    staffEngineeringDepth: "Integrate schema validation engines (such as Zod, AJV, or Joi) at the controller gateway. Adhere to a 'Parse, Don't Validate' design philosophy: strictly convert incoming payloads into sanitized, strongly typed model objects before forwarding data to internal service modules."
+  },
+  scenario: {
+    problem: "An individual endpoint can pass validation perfectly, yet state transitions across multiple endpoints (e.g., Register -> Order -> Refund) create edge cases like orphaned payments, inconsistent inventory allocations, or invalid transition logic.",
+    solution: "SCENARIO_RUNNER executes stateful chains of API operations to test end-to-end user journeys, ensuring state changes propagate cleanly across sequential microservices and audit logs.",
+    realLifeExample: "A flight checkout process charges a customer's card, reserves a seat, and sends a booking code. If reservation is broken, the money is captured, but the seat remains unallocated and the system leaves the order state 'broken' without issuing a rollback.",
+    staffEngineeringDepth: "Implement Saga Orchestration or Process Managers for distributed sagas. Leverage transactional outbox patterns to make sure actions commit together, and store state changes as persistent event records to facilitate point-in-time failure recovery."
+  },
+  security_audit: {
+    problem: "Applications with inputs directly bound to query strings, SQL statements, or HTML renders are prone to injection vectors: SQLi, XSS, Path Traversal, or missing Sandbox headers. Attackers exploit these gaps to steal databases, read root files, or hijack active browser sessions.",
+    solution: "SECURITY_AUDITOR tests fields by injecting malicious patterns (e.g., ' OR 1=1 --, <script>, and traversals) to inspect if error paths reflect raw backends, checking if response headers correctly sanitize client-side contexts.",
+    realLifeExample: "An endpoint loads files via /api/view?file=item.pdf. An attacker accesses /api/view?file=../../../../etc/passwd, bypassing authorization to read the host operating system's user credentials directly.",
+    staffEngineeringDepth: "Maintain defence-in-depth: decouple user parameters using Prepared / Parameterized Queries, purify HTML output using DOMPurify, lock file lookups to strict static folders, and configure strict security headers (CSP, HSTS, XSS-Protection, X-Frame-Options)."
+  }
+};
 
 
 
@@ -145,9 +220,10 @@ interface TestLabProps {
   onStart: (moduleId: TestModuleId, settings: any) => void;
   onAbort: () => void;
   onChangeConfig?: (updates: Partial<RequestConfig>) => void;
+  onClearLogs?: () => void;
 }
 
-export function TestLab({ config, headersList, ws, activeTabId, loading, progress, results, onStart, onAbort, onChangeConfig }: TestLabProps) {
+export function TestLab({ config, headersList, ws, activeTabId, loading, progress, results, onStart, onAbort, onChangeConfig, onClearLogs }: TestLabProps) {
   const [selectedModule, setSelectedModule] = useState<TestModuleId>('blast');
   const [selectedResult, setSelectedResult] = useState<CurlResult | null>(null);
   const [iterationsPerUser, setIterationsPerUser] = useState(10);
@@ -159,6 +235,7 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
     { id: '1', type: 'STATUS_CODE', value: '200' }
   ]);
   const [fuzzerChecks, setFuzzerChecks] = useState({ keyDeletions: true, typeMutations: true, bufferOverflow: false });
+  const [securityChecks, setSecurityChecks] = useState({ sqli: true, xss: true, pathTraversal: true, headersAuditor: true });
   const [chaosAmplitude, setChaosAmplitude] = useState(60);
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
 
@@ -254,8 +331,17 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
       iterations: totalIterations,
       concurrency,
       retries,
-      assertions: assertions.map(a => ({ type: a.type, value: a.value }))
+      assertions: assertions.map(a => ({ type: a.type, value: a.value })),
+      fuzzerChecks,
+      securityChecks
     });
+  };
+
+  const handleClearLogs = () => {
+    setSelectedResult(null);
+    if (onClearLogs) {
+      onClearLogs();
+    }
   };
 
   const copyToClipboard = (text: string) => {
@@ -276,20 +362,193 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
     setAssertions(assertions.map(a => a.id === id ? { ...a, ...updates } : a));
   };
 
+  const securityAudit = useMemo(() => {
+    if (selectedModule !== 'security_audit' || results.length === 0) return null;
+
+    let totalAlerts = 0;
+    const items: { name: string; severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'PASS'; status: string; detail: string; recommendation: string }[] = [];
+
+    let sqliVulnerable = false;
+    let xssVulnerable = false;
+    let authBypassed = false;
+    let corsInsecure = false;
+    let pathTraversalLeak = false;
+
+    results.forEach(r => {
+      const curlLower = r.curlCommand.toLowerCase();
+      const resBody = r.body || '';
+      const resStatus = r.status;
+      const resHeaders = r.headers || {};
+
+      // 1. SQLi Probe detection
+      if (curlLower.includes('sqli_test') || curlLower.includes("' or '1'='1'")) {
+        const hasSqlError = /sql|mysql|sqlite|postgresql|mariadb|syntax error/i.test(resBody);
+        const badStatus = resStatus === 500;
+        if (hasSqlError || (badStatus && resBody.toLowerCase().includes('database'))) {
+          sqliVulnerable = true;
+        }
+      }
+
+      // 2. XSS reflect check
+      if (curlLower.includes('qaxss') || curlLower.includes('<script>')) {
+        if (resBody.includes('qaxss') && resBody.includes('<script>')) {
+          xssVulnerable = true;
+        }
+      }
+
+      // 3. Auth Strip check
+      const isNoAuthProbe = curlLower.includes('x-security-test-type: no_auth');
+      if (isNoAuthProbe && resStatus < 300) {
+        authBypassed = true;
+      }
+
+      // 4. CORS check
+      const lowerResHeaders = Object.keys(resHeaders).reduce((acc, k) => {
+        acc[k.toLowerCase()] = String(resHeaders[k]).toLowerCase();
+        return acc;
+      }, {} as Record<string, string>);
+
+      if (lowerResHeaders['access-control-allow-origin'] === '*' || lowerResHeaders['access-control-allow-origin'] === 'https://evil-attacker.com') {
+        if (lowerResHeaders['access-control-allow-credentials'] === 'true') {
+          corsInsecure = true;
+        }
+      }
+
+      // 5. Path traversal leak check
+      if (curlLower.includes('passwd') || curlLower.includes('etc/passwd')) {
+        if (/root:x:0/i.test(resBody) || /\[boot loader\]/i.test(resBody)) {
+          pathTraversalLeak = true;
+        }
+      }
+    });
+
+    const firstResult = results[0];
+    const firstHeaders = firstResult ? Object.keys(firstResult.headers).reduce((acc, k) => {
+      acc[k.toLowerCase()] = String(firstResult.headers[k]);
+      return acc;
+    }, {} as Record<string, string>) : {};
+
+    const missingCsp = !firstHeaders['content-security-policy'];
+    const missingXFrame = !firstHeaders['x-frame-options'];
+    const missingXContentType = !firstHeaders['x-content-type-options'];
+
+    if (securityChecks.sqli) {
+      if (sqliVulnerable) {
+        totalAlerts++;
+        items.push({
+          name: 'SQL Injection Vulnerability',
+          severity: 'HIGH',
+          status: 'VULNERABLE',
+          detail: 'Database engine leaked syntax or internal query logs in raw response stream.',
+          recommendation: 'Use parameterized query builders, escape inputs, and disable detailed backend exception displays in production.'
+        });
+      } else {
+        items.push({
+          name: 'SQL Injection Shield',
+          severity: 'PASS',
+          status: 'SECURE',
+          detail: 'System handled dynamic escape patterns safely without raw database exception reflections.',
+          recommendation: 'Maintain current ORM and input query serialization practices.'
+        });
+      }
+    }
+
+    if (securityChecks.xss) {
+      if (xssVulnerable) {
+        totalAlerts++;
+        items.push({
+          name: 'Reflective Cross-Site Scripting (XSS)',
+          severity: 'HIGH',
+          status: 'VULNERABLE',
+          detail: 'Injected HTML elements reflected literally inside reply stream. High execution hijack potential.',
+          recommendation: 'Sanitize script tags, use safe text binding helpers, and mandate content validation frameworks.'
+        });
+      } else {
+        items.push({
+          name: 'XSS Escape Filtering',
+          severity: 'PASS',
+          status: 'SECURE',
+          detail: 'No unescaped tags or reflective DOM execution patterns were detected.',
+          recommendation: 'Continue context-aware HTML entity encoding on user entries.'
+        });
+      }
+    }
+
+    if (securityChecks.pathTraversal) {
+      if (pathTraversalLeak) {
+        totalAlerts++;
+        items.push({
+          name: 'Local Directory Path Traversal',
+          severity: 'CRITICAL',
+          status: 'VULNERABLE',
+          detail: 'Privileged file identifiers returned. Confirmed access bypass.',
+          recommendation: 'Sanitise file path separators and avoid dynamic filename lookups against system streams.'
+        });
+      } else {
+        items.push({
+          name: 'Directory Escaping Protection',
+          severity: 'PASS',
+          status: 'SECURE',
+          detail: 'Path traversals rejected or sanitised. System configurations kept secure.',
+          recommendation: 'Keep file assets under bounded static lookup catalogs.'
+        });
+      }
+    }
+
+    if (authBypassed) {
+      totalAlerts++;
+      items.push({
+        name: 'Authentication Bypass Risk',
+        severity: 'MEDIUM',
+        status: 'WARNING',
+        detail: 'Request still resolved successfully after credentials headers were stripped to probe Auth coverage.',
+        recommendation: 'Ensure all transactional endpoints require JWT token or active authorization cookies explicitly.'
+      });
+    }
+
+    if (corsInsecure) {
+      totalAlerts++;
+      items.push({
+        name: 'Insecure CORS Policy',
+        severity: 'MEDIUM',
+        status: 'VULNERABLE',
+        detail: 'Wildcard or dynamic origin reflection detected with credentials allowed. Third-party read execution exploit vector.',
+        recommendation: 'Avoid echoing Origin back inside Access-Control-Allow-Origin when Credentials mode is enabled.'
+      });
+    }
+
+    if (securityChecks.headersAuditor) {
+      if (missingCsp || missingXFrame || missingXContentType) {
+        let missing = [];
+        if (missingCsp) missing.push('CSP');
+        if (missingXFrame) missing.push('X-Frame-Options');
+        if (missingXContentType) missing.push('X-Content-Type-Options');
+        totalAlerts++;
+        items.push({
+          name: 'HTTP Security Headers Hygiene',
+          severity: 'LOW',
+          status: 'WARN',
+          detail: `Missing critical security headers: ${missing.join(', ')}. Safe client protection is decreased.`,
+          recommendation: 'Configure middleware like helmet.js to inject CSP policies, X-Frame-Options values, and X-Content-Type-Options.'
+        });
+      } else {
+        items.push({
+          name: 'HTTP Security Headers Audit',
+          severity: 'PASS',
+          status: 'SECURE',
+          detail: 'All vital sandbox safety headers (CSP, X-Frame, X-Content-Type) were correctly present.',
+          recommendation: 'Regularly audit policy scopes to avoid relaxed origins over time.'
+        });
+      }
+    }
+
+    return { totalAlerts, items };
+  }, [results, selectedModule, securityChecks]);
+
   return (
     <div className="flex flex-col h-full bg-[#0B0D11] overflow-hidden text-slate-200">
       {/* HUD Header */}
-      <div className="p-4 border-b border-[#1E293B] bg-[#0F1115] shrink-0 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-emerald-500/20 rounded-lg border border-emerald-500/45 shrink-0 flex items-center justify-center">
-            <Beaker size={20} className="text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-xs font-black tracking-widest text-white uppercase leading-none font-sans">TEST LAB WORKSPACE</h2>
-            <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider font-semibold font-mono">Performance Orchestration & Attack Simulator</p>
-          </div>
-        </div>
-
+      <div className="p-4 border-b border-[#1E293B] bg-[#0F1115] shrink-0 flex flex-col md:flex-row md:items-center justify-start gap-4">
         {/* Dynamic Interactive Endpoint Changer - Direct Access */}
         <div className="flex-1 max-w-2xl bg-black/50 border border-slate-800 rounded-xl p-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           <div className="flex items-center gap-2 bg-slate-900 border border-slate-755 rounded-lg px-2.5 shrink-0 h-10">
@@ -492,6 +751,32 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
               </div>
             )}
 
+            {selectedModule === 'security_audit' && (
+              <div className="p-4 bg-rose-950/30 rounded-lg border border-rose-550/30 space-y-3">
+                <div className="text-xs font-black text-rose-400 uppercase tracking-widest flex items-center gap-2">
+                  <ShieldAlert size={14} /> Security auditor parameters
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { key: 'sqli', label: 'PROBE SQL INJECTIONS (SQLI)' },
+                    { key: 'xss', label: 'PROBE CROSS-SITE SCRIPTING (XSS)' },
+                    { key: 'pathTraversal', label: 'LOCAL PATH TRAVERSAL PROBE' },
+                    { key: 'headersAuditor', label: 'AUDIT RESPONSE HEADERS HYGIENE' }
+                  ].map(item => (
+                    <label key={item.key} className="flex items-center gap-3.5 text-xs font-mono text-slate-350 hover:text-white cursor-pointer select-none">
+                      <input 
+                        type="checkbox" 
+                        checked={(securityChecks as any)[item.key]} 
+                        onChange={(e) => setSecurityChecks({ ...securityChecks, [item.key]: e.target.checked })}
+                        className="w-4 h-4 accent-rose-500 bg-black border-slate-700 rounded transition-all" 
+                      />
+                      {item.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Assertions Roster */}
             <div className="space-y-3 pt-4 border-t border-slate-800">
               <div className="flex items-center justify-between">
@@ -645,25 +930,36 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
           </div>
 
           {/* Navigation headers */}
-          <div className="flex border-b border-slate-800 bg-[#0B0D11]/95 px-4 shrink-0 shadow">
-             {[
-               { id: 'logs', label: 'TELEMETRY LIVE LOGS' },
-               { id: 'curl', label: 'CURL ORCHESTRATION' },
-               { id: 'theory', label: 'THEORETICAL FRAMEWORK' }
-             ].map(tab => (
-               <button 
-                 key={tab.id}
-                 onClick={() => {
-                   setLabTab(tab.id as any);
-                 }}
-                 className={cn(
-                   "px-4.5 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 font-mono outline-none focus:ring-0 select-none cursor-pointer",
-                   labTab === tab.id ? "border-emerald-500 text-white font-black" : "border-transparent text-slate-400 hover:text-slate-200"
-                 )}
-               >
-                 {tab.label}
-               </button>
-             ))}
+          <div className="flex items-center justify-between border-b border-slate-800 bg-[#0B0D11]/95 px-4 shrink-0 shadow">
+             <div className="flex">
+                {[
+                  { id: 'logs', label: 'TELEMETRY LIVE LOGS' },
+                  { id: 'curl', label: 'CURL ORCHESTRATION' },
+                  { id: 'theory', label: 'THEORETICAL FRAMEWORK' }
+                ].map(tab => (
+                  <button 
+                    key={tab.id}
+                    onClick={() => {
+                      setLabTab(tab.id as any);
+                    }}
+                    className={cn(
+                      "px-4.5 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 font-mono outline-none focus:ring-0 select-none cursor-pointer",
+                      labTab === tab.id ? "border-emerald-500 text-white font-black" : "border-transparent text-slate-400 hover:text-slate-200"
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+             </div>
+             {labTab === 'logs' && results.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearLogs}
+                  className="px-3 py-1.5 rounded-md hover:bg-slate-850 border border-slate-800 text-[10px] text-rose-455 font-mono font-black uppercase tracking-wider flex items-center gap-1.5 transition-all select-none cursor-pointer"
+                >
+                  <Trash2 size={12} className="text-rose-455 animate-pulse" /> Clear Telemetry logs
+                </button>
+             )}
           </div>
 
           {/* Active Tab Screen Area */}
@@ -750,8 +1046,90 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
                          </div>
                        )}
 
+                       {/* Custom QA Security Audit Report Panel */}
+                       {!loading && securityAudit && (
+                         <div className="bg-slate-900/80 border border-rose-500/20 p-5 rounded-xl mb-4 space-y-4 shadow-xl select-text">
+                           <div className="flex items-center justify-between border-b border-slate-800/60 pb-3">
+                             <div className="flex items-center gap-3">
+                               <div className={cn(
+                                 "p-2 rounded-lg flex items-center justify-center font-black text-[10px] border font-mono select-none leading-none",
+                                 securityAudit.totalAlerts > 0 
+                                   ? "bg-rose-500/10 border-rose-500/30 text-rose-400" 
+                                   : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                                )}>
+                                 {securityAudit.totalAlerts > 0 ? "VULNERABLE" : "SECURE PASS"}
+                               </div>
+                               <div>
+                                 <h3 className="text-xs font-black text-white font-mono tracking-wider uppercase leading-none">Vulnerability Compliance Report</h3>
+                                 <p className="text-[10px] text-slate-400 mt-1 uppercase font-mono font-bold leading-none">API Security assessment diagnostic</p>
+                               </div>
+                             </div>
+                             <div className="flex items-center gap-2">
+                               <span className="text-[10px] font-mono text-slate-500 font-bold uppercase leading-none">ALERTS FOUND:</span>
+                               <span className={cn(
+                                 "px-2 py-0.5 rounded font-mono font-black border text-xs leading-none",
+                                 securityAudit.totalAlerts > 0 ? "bg-rose-500/10 border-rose-500/30 text-rose-455" : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                                )}>
+                                 {securityAudit.totalAlerts}
+                                </span>
+                             </div>
+                           </div>
+
+                           <div className="space-y-3">
+                             {securityAudit.items.map((item, idx) => {
+                               const isPass = item.severity === 'PASS';
+                               return (
+                                 <div key={idx} className={cn(
+                                   "p-3.5 rounded-lg border flex flex-col sm:flex-row sm:items-start justify-between gap-4 transition-colors",
+                                   isPass 
+                                     ? "bg-[#090D14]/40 border-slate-850" 
+                                     : item.severity === 'CRITICAL' 
+                                       ? "bg-rose-950/20 border-rose-500/20" 
+                                       : item.severity === 'HIGH'
+                                         ? "bg-rose-950/15 border-rose-500/15"
+                                         : "bg-amber-950/10 border-amber-500/15"
+                                 )}>
+                                   <div className="space-y-1.5 flex-1 select-text">
+                                     <div className="flex items-center gap-2.5 h-4">
+                                       <span className={cn(
+                                         "text-[8px] font-extrabold font-mono px-1.5 py-0.5 rounded uppercase leading-none tracking-wider",
+                                         isPass 
+                                           ? "bg-emerald-500/10 text-emerald-550 border border-emerald-500/20" 
+                                           : item.severity === 'CRITICAL' 
+                                             ? "bg-rose-550 text-black leading-none py-0.5" 
+                                             : item.severity === 'HIGH'
+                                               ? "bg-rose-500/15 text-rose-550 border border-rose-500/25 leading-none"
+                                               : "bg-amber-500/10 text-amber-550 border border-amber-500/25 leading-none"
+                                       )}>
+                                         {item.severity}
+                                       </span>
+                                       <span className="text-xs font-black text-slate-200 font-mono tracking-wide leading-none">{item.name}</span>
+                                     </div>
+                                     <p className="text-xs text-slate-350 leading-relaxed font-sans mt-1">{item.detail}</p>
+                                     {!isPass && (
+                                       <div className="text-[11px] text-slate-400 font-sans border-t border-slate-800/80 pt-1.5 mt-1.5 flex items-start gap-1 font-bold">
+                                         <span className="font-mono font-black text-rose-455 uppercase tracking-tighter shrink-0 text-[10px] [word-spacing:-3px] leading-none">REMEDIATION :</span>
+                                         <span className="leading-relaxed -mt-0.5">{item.recommendation}</span>
+                                       </div>
+                                     )}
+                                   </div>
+                                   <div className={cn(
+                                     "text-[10px] font-mono font-black tracking-wider uppercase px-2.5 py-1 rounded-md shrink-0 border select-none self-start sm:self-auto text-center font-bold",
+                                     isPass 
+                                       ? "bg-emerald-950/10 border-emerald-500/15 text-emerald-500" 
+                                       : "bg-rose-950/20 border-rose-500/25 text-rose-400"
+                                   )}>
+                                     {item.status}
+                                   </div>
+                                 </div>
+                               );
+                             })}
+                           </div>
+                         </div>
+                       )}
+
                        {/* Latency Distribution Graph always available above logs */}
-                       {false && results.length > 0 && (
+                       {results.length > 0 && (
                          <div className="bg-slate-900/60 border border-slate-850 p-4 rounded-xl mb-4 space-y-4">
                            <div className="flex items-center justify-between">
                              <div className="flex items-center gap-2">
@@ -968,42 +1346,136 @@ export function TestLab({ config, headersList, ws, activeTabId, loading, progres
                   </motion.div>
                 )}
 
-                {labTab === 'theory' && (
-                  <motion.div 
-                    key="theoryTab"
-                    initial={{ opacity: 0, y: 5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -5 }}
-                    className="absolute inset-0 p-8 overflow-y-auto custom-scrollbar bg-black"
-                  >
-                     <div className="max-w-xl space-y-8 select-text">
-                        <section className="space-y-3">
-                           <h2 className="text-xs font-black text-white uppercase tracking-widest flex items-center gap-2 border-b border-slate-800 pb-2">
-                              <Info size={18} className="text-emerald-400 animate-pulse" /> Scientific attack framework theory
-                           </h2>
-                           <p className="text-slate-300 font-serif italic text-base leading-relaxed border-l-4 border-[#10b981]/50 pl-4 py-2 bg-slate-950/20 rounded-r">
-                              "{activeModule.theory}"
-                           </p>
-                        </section>
+                {labTab === 'theory' && (() => {
+                  const framework = THEORETICAL_FRAMEWORKS[activeModule.id] || {
+                    problem: "System components must withstand unexpected volumes or structural requests. Under high pressure, system boundary limits leak raw thread failures or state corruption.",
+                    solution: "Systematically stress endpoints under isolated test protocols to measure threshold boundaries prior to production exposure.",
+                    realLifeExample: "Normal production spikes triggering unexpected service failures due to lack of pre-production validation.",
+                    staffEngineeringDepth: "Implement strict timeout margins, secure error handling routines, and dynamic query bounds on all mutable actions."
+                  };
 
-                        <section className="space-y-4">
-                           <h3 className="text-xs font-black text-slate-300 uppercase tracking-widest block">Recommended Application & Audit Scenarios</h3>
-                           <div className="grid grid-cols-1 gap-4">
-                              {[
-                                { t: 'Performance & Scalability mapping', d: 'Identify exactly when container CPU allocations scale, and check request starvation thresholds.' },
-                                { t: 'Transactional integrity testing', d: 'Isolate database deadlock states and trace write locks across concurrent tables.' },
-                                { t: 'Cache consistent queries validation', d: 'Verify if overlapping cache writes successfully invalidate redundant memory states.' }
-                              ].map(use => (
-                                <div key={use.t} className="p-4 border border-slate-800 bg-[#0F1115] hover:bg-slate-900/40 rounded-lg transition-all select-none">
-                                   <div className="text-white font-bold text-xs sm:text-sm mb-1">{use.t}</div>
-                                   <div className="text-slate-450 text-xs font-mono uppercase leading-normal">{use.d}</div>
+                  return (
+                    <motion.div 
+                      key="theoryTab"
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="absolute inset-0 p-6 md:p-8 overflow-y-auto custom-scrollbar bg-[#07090C] select-text"
+                    >
+                       <div className="max-w-4xl mx-auto space-y-6">
+                          
+                          {/* Section Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+                            <div className="flex items-center gap-3">
+                              <div className={cn(
+                                "w-10 h-10 rounded-xl flex items-center justify-center font-bold text-lg border",
+                                activeModule.id === 'security_audit' || activeModule.id === 'chaos'
+                                  ? "bg-rose-500/10 border-rose-500/20 text-rose-455"
+                                  : "bg-emerald-500/10 border-emerald-500/20 text-emerald-450"
+                              )}>
+                                {activeModule.icon}
+                              </div>
+                              <div>
+                                <h2 className="text-sm font-black text-white font-mono tracking-wider uppercase leading-none">{activeModule.name}</h2>
+                                <p className="text-[10px] text-slate-400 mt-1 uppercase font-mono font-bold leading-none">Theoretical Attack & Safety Framework</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-mono font-black border border-slate-800 px-2 py-1 bg-black rounded text-slate-400 uppercase tracking-widest">
+                                {activeModule.strategy}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Quick Summary Banner */}
+                          <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-850/60 leading-relaxed font-sans text-xs md:text-sm text-slate-300">
+                            <span className="font-mono text-emerald-400 font-black mr-2 uppercase tracking-wide">CORE PARADIGM:</span>
+                            {activeModule.theory}
+                          </div>
+
+                          {/* 2x2 Grid for Problem/Solution and Real-World Examples */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            
+                            {/* Card 1: The Problem (Vulnerability) */}
+                            <div className="bg-[#090D14] border border-rose-950/35 rounded-xl p-5 hover:border-rose-900/30 transition-colors flex flex-col justify-between">
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-rose-400">
+                                  <AlertTriangle size={15} />
+                                  <span className="text-xs font-black font-mono uppercase tracking-widest">The Production Underworld (The Problem)</span>
                                 </div>
-                              ))}
-                           </div>
-                        </section>
-                     </div>
-                  </motion.div>
-                )}
+                                <p className="text-xs text-slate-350 leading-relaxed font-sans select-text">
+                                  {framework.problem}
+                                </p>
+                              </div>
+                              <div className="mt-4 pt-3 border-t border-slate-900/50 flex justify-between items-center text-[10px] text-rose-500/80 font-mono font-bold">
+                                <span>THREAT SIGNATURE: CRITICAL EXCESS</span>
+                                <span>STATUS: DANGER</span>
+                              </div>
+                            </div>
+
+                            {/* Card 2: The Solution (Mitigation) */}
+                            <div className="bg-[#090D14] border border-emerald-950/35 rounded-xl p-5 hover:border-emerald-900/30 transition-colors flex flex-col justify-between">
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-emerald-400">
+                                  <Beaker size={15} />
+                                  <span className="text-xs font-black font-mono uppercase tracking-widest">Engineering Mitigation (The Solution)</span>
+                                </div>
+                                <p className="text-xs text-slate-350 leading-relaxed font-sans select-text">
+                                  {framework.solution}
+                                </p>
+                              </div>
+                              <div className="mt-4 pt-3 border-t border-slate-900/50 flex justify-between items-center text-[10px] text-emerald-500/80 font-mono font-bold">
+                                <span>MITIGATION SEQUENCE: SHIELD-INIT</span>
+                                <span>STATUS: DEPLOYED</span>
+                              </div>
+                            </div>
+
+                          </div>
+
+                          {/* Real World Production Incident Case Study */}
+                          <div className="bg-[#0F1217]/50 border border-slate-850/80 rounded-xl p-5 space-y-3 select-text">
+                            <div className="flex items-center gap-2 text-blue-400 border-b border-slate-800/50 pb-2">
+                              <Terminal size={14} />
+                              <span className="text-xs font-black font-mono uppercase tracking-widest">Real-World Incident Analysis</span>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="text-xs text-white leading-relaxed font-sans font-bold">
+                                Production Impact Scenario:
+                              </p>
+                              <p className="text-xs text-slate-350 leading-relaxed font-sans italic border-l-2 border-slate-700 pl-3">
+                                "{framework.realLifeExample}"
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Staff-Level Architecture Guide */}
+                          <div className="bg-gradient-to-r from-emerald-990/10 to-transparent border border-emerald-500/20 rounded-xl p-5 space-y-3.5 shadow-lg select-text">
+                            <div className="flex items-center gap-2.5 text-emerald-400">
+                              <Layout size={15} />
+                              <span className="text-xs font-black font-mono uppercase tracking-widest">Architectural Guardrails (Staff Engineering Depth)</span>
+                            </div>
+                            <p className="text-xs text-slate-300 leading-relaxed font-sans font-bold">
+                              How to scale protection cleanly:
+                            </p>
+                            <p className="text-xs text-slate-350 leading-relaxed font-sans font-medium">
+                              {framework.staffEngineeringDepth}
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-emerald-500/10 text-[10px] font-mono text-slate-400">
+                              <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                                <span>Zero-Trust validation checkpoints</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                                <span>Auto-remediation telemetry patterns</span>
+                              </div>
+                            </div>
+                          </div>
+
+                       </div>
+                    </motion.div>
+                  );
+                })()}
              </AnimatePresence>
           </div>
 

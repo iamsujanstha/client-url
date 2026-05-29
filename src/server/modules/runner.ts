@@ -118,6 +118,98 @@ export class RequestRunner {
           await new Promise(r => setTimeout(r, Math.random() * 800));
         }
 
+        // 5. Security Audit: Systematic Vulnerability Probes
+        if (testModule === 'security_audit') {
+          const probeType = index % 6;
+          const headers = { ...finalRequest.headers };
+          let bodyText = finalRequest.body || '';
+          let urlText = finalRequest.url || '';
+
+          // Add metadata helper headers so the engine and UI can audit the security testing
+          headers['X-Security-Test-Type'] = ['SQLI', 'XSS', 'NO_AUTH', 'CORS', 'PATH_TRAVERSAL', 'CMD_INJECTION'][probeType];
+
+          if (probeType === 0) { // SQL Injection (SQLi)
+            const sqlPayload = "' OR '1'='1' --";
+            urlText += (urlText.includes('?') ? '&' : '?') + `q=sqli_test${encodeURIComponent(sqlPayload)}`;
+            if (bodyText) {
+              try {
+                const bodyJson = JSON.parse(bodyText);
+                Object.keys(bodyJson).forEach(k => {
+                  if (typeof bodyJson[k] === 'string') {
+                    bodyJson[k] += ` ${sqlPayload}`;
+                  }
+                });
+                bodyText = JSON.stringify(bodyJson);
+              } catch (e) {
+                bodyText += ` ${sqlPayload}`;
+              }
+            }
+          } else if (probeType === 1) { // Cross-Site Scripting (XSS)
+            const xssPayload = `"><script>alert("qaxss")</script>`;
+            urlText += (urlText.includes('?') ? '&' : '?') + `input=${encodeURIComponent(xssPayload)}`;
+            if (bodyText) {
+              try {
+                const bodyJson = JSON.parse(bodyText);
+                Object.keys(bodyJson).forEach(k => {
+                  if (typeof bodyJson[k] === 'string') {
+                    bodyJson[k] += ` ${xssPayload}`;
+                  }
+                });
+                bodyText = JSON.stringify(bodyJson);
+              } catch (e) {
+                bodyText += ` ${xssPayload}`;
+              }
+            }
+          } else if (probeType === 2) { // No Authentication Bypass
+            // Strip out credential headers to see if we get a 401/403 (Safe) or 200/500 (Vulnerable!)
+            const authHeaders = ['authorization', 'cookie', 'x-api-key', 'token', 'auth', 'x-auth-token'];
+            Object.keys(headers).forEach(k => {
+              if (authHeaders.includes(k.toLowerCase())) {
+                delete headers[k];
+              }
+            });
+          } else if (probeType === 3) { // CORS Wildcard & Origin Reflection
+            headers['Origin'] = 'https://evil-attacker.com';
+            headers['Referer'] = 'https://evil-attacker.com/exploit-stage';
+          } else if (probeType === 4) { // Path Traversal / Local File Inclusion (LFI)
+            const traversalPayload = '../../../../etc/passwd';
+            urlText += (urlText.includes('?') ? '&' : '?') + `file=${encodeURIComponent(traversalPayload)}`;
+            if (bodyText) {
+              try {
+                const bodyJson = JSON.parse(bodyText);
+                Object.keys(bodyJson).forEach(k => {
+                  if (typeof bodyJson[k] === 'string') {
+                    bodyJson[k] = traversalPayload;
+                  }
+                });
+                bodyText = JSON.stringify(bodyJson);
+              } catch (e) {
+                bodyText = traversalPayload;
+              }
+            }
+          } else if (probeType === 5) { // Shell Command Injection
+            const cmdPayload = '; cat /etc/passwd || dir';
+            urlText += (urlText.includes('?') ? '&' : '?') + `cmd=${encodeURIComponent(cmdPayload)}`;
+            if (bodyText) {
+              try {
+                const bodyJson = JSON.parse(bodyText);
+                Object.keys(bodyJson).forEach(k => {
+                  if (typeof bodyJson[k] === 'string') {
+                    bodyJson[k] += ` ${cmdPayload}`;
+                  }
+                });
+                bodyText = JSON.stringify(bodyJson);
+              } catch (e) {
+                bodyText += ` ${cmdPayload}`;
+              }
+            }
+          }
+
+          finalRequest.headers = headers;
+          finalRequest.body = bodyText;
+          finalRequest.url = urlText;
+        }
+
         // Standard Jitter (Fallback)
         if (jitter && testModule !== 'chaos' && testModule !== 'race') {
           const wait = Math.random() * 500;
